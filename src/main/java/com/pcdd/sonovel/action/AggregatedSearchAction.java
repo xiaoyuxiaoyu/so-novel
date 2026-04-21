@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Scanner;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import static org.fusesource.jansi.AnsiRenderer.render;
 
@@ -56,17 +57,20 @@ public class AggregatedSearchAction {
         List<Source> searchableSources = SourceUtils.getSearchableSources();
         CountDownLatch latch = new CountDownLatch(searchableSources.size());
 
-        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+        var executor = Executors.newVirtualThreadPerTaskExecutor();
+        try {
             for (Source source : searchableSources) {
                 executor.execute(() -> {
                     try {
                         List<SearchResult> res = "proxy-required.json".equals(source.config.getActiveRules()) && source.config.getSourceId() == 2
                                 ? new SearchParserQuanben5(source.config).parse(kw)
                                 : new SearchParser(source.config).parse(kw);
+                        Rule rule = source.rule;
                         if (CollUtil.isNotEmpty(res)) {
-                            Rule rule = source.rule;
                             Console.log("<== 书源 {} ({})\t搜索到 {} 条记录", rule.getId(), rule.getName(), res.size());
                             results.addAll(res);
+                        } else {
+                            Console.log("<== 书源 {} ({})\t无结果", rule.getId(), rule.getName());
                         }
                     } catch (Exception e) {
                         Console.error("搜索源 {} 异常：{}", source.rule.getName(), e.getMessage());
@@ -76,10 +80,16 @@ public class AggregatedSearchAction {
                 });
             }
 
-            latch.await();
+            int aggregateTimeoutSec = 60;
+            boolean completed = latch.await(aggregateTimeoutSec, TimeUnit.SECONDS);
+            if (!completed) {
+                Console.log(render("<== 聚合搜索超时 ({}s)，部分书源未响应，使用已收集到的结果", "yellow"), aggregateTimeoutSec);
+            }
             return AppConfigLoader.APP_CONFIG.getSearchFilter() == 1
                     ? SearchResultsHandler.filterSort(results, kw)
                     : results;
+        } finally {
+            executor.shutdownNow();
         }
     }
 
