@@ -58,13 +58,23 @@ public class Crawler {
     }
 
     /**
+     * 爬取小说（CLI 默认入口，不收集回推内容）。
+     */
+    public double crawl(String bookUrl, List<Chapter> toc) {
+        return crawl(bookUrl, toc, null);
+    }
+
+    /**
      * 爬取小说
      *
-     * @param bookUrl 详情页链接
-     * @param toc     章节目录
+     * @param bookUrl   详情页链接
+     * @param toc       章节目录
+     * @param collector 可选的"回推收集器"。非 null 时，每章解析完成后会同步累加纯文本
+     *                  副本到 collector，供 IncrementalDownloadServlet 在本次任务结束后
+     *                  整体回推到 AI 后台。CLI 路径传 null，行为与改造前完全一致。
      */
     @SneakyThrows
-    public double crawl(String bookUrl, List<Chapter> toc) {
+    public double crawl(String bookUrl, List<Chapter> toc, ReportCollector collector) {
         digitCount = String.valueOf(toc.size()).length();
         Book book = new BookParser(config).parse(bookUrl);
         BookContext.set(book);
@@ -115,7 +125,12 @@ public class Crawler {
         // IO 密集任务，瓶颈在网络和磁盘而不是 CPU
         try (var limiter = new VirtualThreadLimiter(maxConcurrent)) {
             toc.forEach(item -> limiter.submit(() -> {
-                createChapterFile(chapterParser.parse(item));
+                Chapter parsed = chapterParser.parse(item);
+                createChapterFile(parsed);
+
+                if (collector != null) {
+                    collector.collect(parsed);
+                }
 
                 long currentIndex = completed.incrementAndGet();
                 if (finalProgressBar != null) {
