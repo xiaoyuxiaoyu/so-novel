@@ -49,6 +49,7 @@ public class WebServer {
         context.addServlet(RemoteBookInfoServlet.class, "/remote-book-info");
         context.addServlet(SourceTocServlet.class, "/source-toc");
         context.addServlet(IncrementalDownloadServlet.class, "/incremental-download");
+        context.addServlet(RepushServlet.class, "/repush");
 
         ServletHolder staticHolder = new ServletHolder("default", DefaultServlet.class);
         // 不显示目录列表，但子文件依然可访问

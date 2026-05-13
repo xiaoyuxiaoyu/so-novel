@@ -10,6 +10,7 @@ import com.pcdd.sonovel.core.ReportCollector;
 import com.pcdd.sonovel.exception.RemoteBackendException;
 import com.pcdd.sonovel.model.AppConfig;
 import com.pcdd.sonovel.model.Chapter;
+import com.pcdd.sonovel.model.LocalTaskState;
 import com.pcdd.sonovel.model.RemoteBackendConfig;
 import com.pcdd.sonovel.model.Rule;
 import com.pcdd.sonovel.model.remote.RemoteBookInfo;
@@ -19,6 +20,7 @@ import com.pcdd.sonovel.model.remote.RemotePushRequest;
 import com.pcdd.sonovel.model.remote.RemotePushResponse;
 import com.pcdd.sonovel.parse.TocParser;
 import com.pcdd.sonovel.repository.RemoteBackendClient;
+import com.pcdd.sonovel.repository.TaskStateRepository;
 import com.pcdd.sonovel.util.SourceUtils;
 import com.pcdd.sonovel.web.util.RespUtils;
 import jakarta.servlet.http.HttpServlet;
@@ -204,10 +206,21 @@ public class IncrementalDownloadServlet extends HttpServlet {
 
             new Crawler(cfg).crawl(bookUrl, subToc, collector);
 
-            // ---- 8. 构造回推请求（chapter_no 从 latest_chapter_no + 1 起递增）----
-            List<RemoteChapterPushItem> chapters = renumberForReport(
-                    collector.snapshot(),
-                    bookInfo.getLatestChapterNo() + 1);
+            // ---- 8. 构造回推请求 + 持久化 DOWNLOADED_NOT_PUSHED 状态 ----
+            List<RemoteChapterPushItem> rawSnapshot = collector.snapshot();
+            int kPlus1 = bookInfo.getLatestChapterNo() + 1;
+            List<RemoteChapterPushItem> chapters = renumberForReport(rawSnapshot, kPlus1);
+
+            TaskStateRepository taskRepo = new TaskStateRepository(workDir);
+            taskRepo.save(LocalTaskState.builder()
+                    .taskId(taskId)
+                    .bookId(bookId)
+                    .sourceId(rule.getId())
+                    .sourceName(rule.getName())
+                    .bookUrl(bookUrl)
+                    .chapters(buildChapterRefs(rawSnapshot, kPlus1))
+                    .status(LocalTaskState.Status.DOWNLOADED_NOT_PUSHED)
+                    .build());
 
             RemoteClientMeta meta = RemoteClientMeta.builder()
                     .sourceName(rule.getName())
@@ -221,7 +234,7 @@ public class IncrementalDownloadServlet extends HttpServlet {
                     .clientMeta(meta)
                     .build();
 
-            // ---- 9. 回推 + SSE 进度推送 ----
+            // ---- 9. 回推 + SSE 进度推送 + 状态收敛 ----
             DownloadProgressSseServlet.sendProgress(JSONUtil.toJsonStr(Map.of(
                     "type", "report-progress",
                     "phase", "reporting",
@@ -232,6 +245,7 @@ public class IncrementalDownloadServlet extends HttpServlet {
             try {
                 pushResp = RemoteBackendClient.reportChapters(pushReq);
             } catch (RemoteBackendException e) {
+                taskRepo.markFailed(taskId, e.getMessage());
                 DownloadProgressSseServlet.sendProgress(JSONUtil.toJsonStr(Map.of(
                         "type", "report-progress",
                         "phase", "failed",
@@ -245,6 +259,13 @@ public class IncrementalDownloadServlet extends HttpServlet {
                 data.put("errorMessage", e.getMessage());
                 RespUtils.writeJson(resp, data);
                 return;
+            }
+
+            boolean hasRejected = pushResp.getRejected() != null && !pushResp.getRejected().isEmpty();
+            if (hasRejected) {
+                taskRepo.markPartial(taskId, pushResp.getRejected());
+            } else {
+                taskRepo.markPushed(taskId);
             }
 
             DownloadProgressSseServlet.sendProgress(JSONUtil.toJsonStr(Map.of(
@@ -296,6 +317,27 @@ public class IncrementalDownloadServlet extends HttpServlet {
      * 仅追加场景（方案 v0.2 修订 ①），不处理覆盖错章；保留 title / content 原样。
      * package-private 便于单测直接覆盖。
      */
+    /**
+     * 把 {@link com.pcdd.sonovel.core.ReportCollector#snapshot()} 输出（chapterNo 此时是
+     * 源站 order 占位）转为 {@link LocalTaskState.ChapterRef} 列表：
+     * 同时填入"源站 order"（reports 副本文件名用此）与"AI 后台目标 chapter_no"。
+     */
+    static List<LocalTaskState.ChapterRef> buildChapterRefs(List<RemoteChapterPushItem> rawSnapshot, int startChapterNo) {
+        if (rawSnapshot == null || rawSnapshot.isEmpty()) {
+            return List.of();
+        }
+        List<LocalTaskState.ChapterRef> out = new ArrayList<>(rawSnapshot.size());
+        for (int i = 0; i < rawSnapshot.size(); i++) {
+            RemoteChapterPushItem c = rawSnapshot.get(i);
+            out.add(LocalTaskState.ChapterRef.builder()
+                    .sourceOrder(c.getChapterNo())   // 占位的是源站 order
+                    .chapterNo(startChapterNo + i)
+                    .title(c.getTitle())
+                    .build());
+        }
+        return out;
+    }
+
     static List<RemoteChapterPushItem> renumberForReport(List<RemoteChapterPushItem> raw, int startChapterNo) {
         if (raw == null || raw.isEmpty()) {
             return List.of();
