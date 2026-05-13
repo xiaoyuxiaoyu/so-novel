@@ -26,6 +26,13 @@
     <button class="btn-settings" id="settingsToggle">设置</button>
   </header>
 
+  <!-- AI 后台健康状态条幅（启动时不显示，仅在 /backend-status 返回 FAILED 时显示）-->
+  <div class="backend-banner hidden" id="backendBanner" role="alert">
+    <span id="backendBannerMsg"></span>
+    <button class="banner-action" id="backendBannerRetry">重试</button>
+    <button class="banner-close" id="backendBannerClose" aria-label="关闭">×</button>
+  </div>
+
   <section class="container settings-container" id="settingsPanel" style="display:none">
     <h2 class="section-title">偏好设置</h2>
     <p class="settings-hint">以下设置仅保存在浏览器本地，不会修改服务器配置。</p>
@@ -56,6 +63,25 @@
       <div class="settings-item">
         <label for="settingConcurrency">下载并发限制</label>
         <input type="number" id="settingConcurrency" min="1" placeholder="默认">
+      </div>
+    </div>
+    <!-- AI 后台连接分组 -->
+    <h3 class="settings-subtitle">AI 后台连接</h3>
+    <p class="settings-hint">
+      地址与 API Key 在服务端 <code>config.ini [remote-backend]</code> 配置，浏览器不暴露 API Key；
+      运营者需切换环境时改 ini 后重启服务。
+    </p>
+    <div class="settings-grid">
+      <div class="settings-item">
+        <label>当前地址 (base-url)</label>
+        <input type="text" id="settingBackendBaseUrl" readonly placeholder="(mock 模式)">
+      </div>
+      <div class="settings-item">
+        <label>连接状态</label>
+        <div class="backend-status-row">
+          <span id="settingBackendStatus" class="backend-status backend-status-unknown">未检测</span>
+          <button class="btn btn-secondary" id="settingBackendTestBtn">测试连接</button>
+        </div>
       </div>
     </div>
   </section>
@@ -793,11 +819,81 @@
       ul.hidden = false
     }
 
+    // ========== AI 后台健康状态（M4b） ==========
+    const backendBanner = document.getElementById('backendBanner')
+    const backendBannerMsg = document.getElementById('backendBannerMsg')
+    const backendBannerRetry = document.getElementById('backendBannerRetry')
+    const backendBannerClose = document.getElementById('backendBannerClose')
+    const settingBackendBaseUrl = document.getElementById('settingBackendBaseUrl')
+    const settingBackendStatus = document.getElementById('settingBackendStatus')
+    const settingBackendTestBtn = document.getElementById('settingBackendTestBtn')
+
+    const formatStatus = (s) => {
+      if (s === 'OK') return { text: '正常', cls: 'backend-status-ok' }
+      if (s === 'FAILED') return { text: '异常', cls: 'backend-status-failed' }
+      return { text: '未检测', cls: 'backend-status-unknown' }
+    }
+
+    const applyBackendStatus = (data) => {
+      // data = { baseUrl, mockMode, health: {status, message, checkedAt, apiVersion, serverTime} }
+      settingBackendBaseUrl.value = data.mockMode
+        ? '(mock 模式)'
+        : (data.baseUrl || '(未配置)')
+
+      const h = data.health || { status: 'UNKNOWN', message: '' }
+      const fmt = formatStatus(h.status)
+      settingBackendStatus.className = `backend-status ${fmt.cls}`
+      let txt = fmt.text
+      if (h.status === 'OK' && h.apiVersion) txt += ` · ${h.apiVersion}`
+      if (h.status === 'FAILED' && h.message) txt += ` · ${h.message}`
+      settingBackendStatus.textContent = txt
+
+      // 仅 FAILED 时显示顶部条幅（mock 模式与 OK 都不打扰）
+      if (h.status === 'FAILED') {
+        backendBannerMsg.textContent = `AI 后台连接异常：${h.message || '请检查 config.ini [remote-backend]'}`
+        backendBanner.classList.remove('hidden')
+      } else {
+        backendBanner.classList.add('hidden')
+      }
+    }
+
+    const fetchBackendStatus = async () => {
+      try {
+        const resp = await fetch('/backend-status')
+        const json = await resp.json()
+        if (json && json.data) applyBackendStatus(json.data)
+      } catch (e) {
+        console.error('fetchBackendStatus failed:', e)
+      }
+    }
+
+    const testBackendConnection = async () => {
+      settingBackendTestBtn.disabled = true
+      settingBackendStatus.textContent = '检测中…'
+      settingBackendStatus.className = 'backend-status backend-status-unknown'
+      try {
+        const resp = await fetch('/remote-ping')
+        const json = await resp.json()
+        // 不论成功失败都重读一次状态视图（/remote-ping 已经更新了服务端 Health）
+        await fetchBackendStatus()
+        if (!resp.ok) console.warn('ping failed:', json.message)
+      } catch (e) {
+        console.error('testBackendConnection failed:', e)
+      } finally {
+        settingBackendTestBtn.disabled = false
+      }
+    }
+
+    settingBackendTestBtn.addEventListener('click', testBackendConnection)
+    backendBannerRetry.addEventListener('click', testBackendConnection)
+    backendBannerClose.addEventListener('click', () => backendBanner.classList.add('hidden'))
+
     // 页面加载时执行
     initSSE()
     loadSettings()
     fetchConfig()
     fetchLocalBooks()
+    fetchBackendStatus()
     tb1.style.display = 'none';
     tb2.style.display = 'none';
   })

@@ -9,6 +9,8 @@ import com.pcdd.sonovel.action.CheckUpdateAction;
 import com.pcdd.sonovel.context.HttpClientContext;
 import com.pcdd.sonovel.core.AppConfigLoader;
 import com.pcdd.sonovel.core.OkHttpClientFactory;
+import com.pcdd.sonovel.core.RemoteBackendHealth;
+import com.pcdd.sonovel.repository.RemoteBackendClient;
 import com.pcdd.sonovel.launch.CliLauncher;
 import com.pcdd.sonovel.launch.TuiLauncher;
 import com.pcdd.sonovel.model.AppConfig;
@@ -65,6 +67,23 @@ public class Main {
         String mode = System.getProperty("mode", "tui");
 
         if (cfg.getWebEnabled() == 1) {
+            // 启动期异步检测 AI 后台健康状态，不阻塞 WebServer 启动
+            if (cfg.getRemoteBackend() != null && cfg.getRemoteBackend().getStartupPing() != null
+                    && cfg.getRemoteBackend().getStartupPing() == 1) {
+                new Thread(() -> {
+                    try {
+                        Thread.sleep(2000);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                    try {
+                        RemoteBackendHealth.recordOk(RemoteBackendClient.ping());
+                    } catch (Exception e) {
+                        RemoteBackendHealth.recordFailed(e.getMessage());
+                    }
+                }, "remote-backend-startup-ping").start();
+            }
             new WebServer().start();
         } else if (args.length == 0 && "tui".equalsIgnoreCase(mode)) {
             TuiLauncher.launch(cfg);

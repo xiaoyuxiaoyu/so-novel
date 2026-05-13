@@ -716,3 +716,56 @@ input[disabled] {
 .modal-rejected li { margin: 2px 0; }
 
 .btn-open-modal { white-space: nowrap; }
+
+/* ===== AI 后台健康状态条幅 + 设置面板状态分组（M4b） ===== */
+.backend-banner {
+  background: #fff3cd;
+  color: #856404;
+  border-bottom: 1px solid #ffe69c;
+  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.92em;
+}
+.backend-banner .banner-action {
+  background: #856404;
+  color: #fff;
+  border: none;
+  padding: 4px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.88em;
+}
+.backend-banner .banner-action:hover { background: #6b4f03; }
+.backend-banner .banner-close {
+  margin-left: auto;
+  background: none;
+  border: none;
+  font-size: 18px;
+  color: #856404;
+  cursor: pointer;
+  padding: 0 6px;
+}
+
+.settings-subtitle {
+  margin: 20px 0 6px;
+  font-size: 1em;
+  color: #444;
+}
+
+.backend-status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+.backend-status {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 0.85em;
+}
+.backend-status-ok { background: #d4edda; color: #155724; }
+.backend-status-failed { background: #f8d7da; color: #721c24; }
+.backend-status-unknown { background: #e2e3e5; color: #383d41; }
