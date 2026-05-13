@@ -17,4 +17,6 @@ logs/
 bundle/jre*.zip
 
 config-dev.ini
-docs/
+
+# 本地任务状态与回推章节副本（feat/web-active-report 新增）
+.so-novel/
