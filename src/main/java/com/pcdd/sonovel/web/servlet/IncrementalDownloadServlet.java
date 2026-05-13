@@ -91,7 +91,13 @@ public class IncrementalDownloadServlet extends HttpServlet {
             RespUtils.writeError(resp, 400, "url 不能为空");
             return;
         }
-        Rule rule = SourceUtils.getRule(bookUrl);
+        Rule rule;
+        try {
+            rule = SourceUtils.getRule(bookUrl);
+        } catch (IllegalArgumentException e) {
+            RespUtils.writeError(resp, 400, "不支持的源站 URL");
+            return;
+        }
         if (rule == null) {
             RespUtils.writeError(resp, 400, "不支持的源站 URL");
             return;

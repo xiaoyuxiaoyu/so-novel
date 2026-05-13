@@ -42,7 +42,13 @@ public class SourceTocServlet extends HttpServlet {
         }
 
         try {
-            Rule rule = SourceUtils.getRule(bookUrl);
+            Rule rule;
+            try {
+                rule = SourceUtils.getRule(bookUrl);
+            } catch (IllegalArgumentException e) {
+                RespUtils.writeError(resp, 400, "不支持的源站 URL");
+                return;
+            }
             if (rule == null) {
                 RespUtils.writeError(resp, 400, "不支持的源站 URL");
                 return;
