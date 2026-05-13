@@ -64,8 +64,9 @@
     <section class="container download-container" id="downloadContainer">
       <h2 class="section-title">搜索书籍</h2>
       <div class="search-container">
-        <input id="downloadSearchName" placeholder="请输入书名或作者，尽量输完整" aria-label="搜索书名或作者">
-        <button class="btn btn-primary btn-search" id="searchButton">搜索</button>
+        <input id="downloadSearchName" placeholder="书名（必填，将精确匹配）" aria-label="搜索书名">
+        <input id="downloadSearchAuthor" placeholder="作者（必填，将精确匹配）" aria-label="搜索作者">
+        <button class="btn btn-primary btn-search" id="searchButton" disabled>搜索</button>
       </div>
       <div class="body-container" id="tb1">
         <div class="table-responsive">
@@ -130,6 +131,7 @@
     // DOM 元素引用
     const downloadContainer = document.getElementById('downloadContainer')
     const downloadSearchName = document.getElementById('downloadSearchName')
+    const downloadSearchAuthor = document.getElementById('downloadSearchAuthor')
     const searchButton = document.getElementById('searchButton')
     const refreshListButton = document.getElementById('refreshList')
     const downloadTableBody = document.getElementById('downloadTableBody')
@@ -430,17 +432,29 @@
       }
     }
 
+    // 双字段联动：任一为空时禁用搜索按钮
+    const refreshSearchButtonState = () => {
+      const hasBookName = downloadSearchName.value.trim().length > 0
+      const hasAuthor = downloadSearchAuthor.value.trim().length > 0
+      searchButton.disabled = !(hasBookName && hasAuthor)
+    }
+
     const aggregatedSearch = async () => {
-      const value = downloadSearchName.value.trim()
-      if (!value) {
-        alert("请输入书名或作者！")
+      const bookName = downloadSearchName.value.trim()
+      const author = downloadSearchAuthor.value.trim()
+      if (!bookName || !author) {
+        alert("请同时输入书名与作者！")
         return
       }
       showTip('正在搜索...')
       searchButton.disabled = true // 搜索时禁用按钮
-      downloadSearchName.disabled = true // 搜索时禁用输入框
+      downloadSearchName.disabled = true
+      downloadSearchAuthor.disabled = true
       try {
-        const searchUrl = `/search/aggregated?kw=${encodeURIComponent(value)}`
+        // 服务端单点过滤：exactMatch=true 时按"书名+作者均 trim 严格相等"过滤，前端不再二次过滤
+        const searchUrl = `/search/aggregated?kw=${encodeURIComponent(bookName)}`
+          + `&author=${encodeURIComponent(author)}`
+          + `&exactMatch=true`
         const response = await fetch(searchUrl)
         const data = await response.json()
         console.log('search results', data)
@@ -454,8 +468,9 @@
       } finally {
         hideTip()
         downloadContainer.classList.add('expanded')
-        searchButton.disabled = false // 搜索完成后启用按钮
-        downloadSearchName.disabled = false // 搜索完成后启用输入框
+        downloadSearchName.disabled = false
+        downloadSearchAuthor.disabled = false
+        refreshSearchButtonState() // 恢复按钮状态由当前输入内容决定
       }
     }
 
@@ -487,12 +502,18 @@
     searchButton.addEventListener('click', aggregatedSearch)
     refreshListButton.addEventListener('click', fetchLocalBooks)
 
-    // 按下 Enter 键触发搜索
-    downloadSearchName.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
+    // 双字段联动按钮置灰
+    downloadSearchName.addEventListener('input', refreshSearchButtonState)
+    downloadSearchAuthor.addEventListener('input', refreshSearchButtonState)
+
+    // 按下 Enter 键触发搜索（仅在按钮未禁用时）
+    const onSearchEnter = (e) => {
+      if (e.key === 'Enter' && !searchButton.disabled) {
         aggregatedSearch()
       }
-    })
+    }
+    downloadSearchName.addEventListener('keydown', onSearchEnter)
+    downloadSearchAuthor.addEventListener('keydown', onSearchEnter)
 
     // 使用事件委托处理分页按钮
     tb1.addEventListener('click', (e) => {

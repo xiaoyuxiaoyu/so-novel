@@ -50,8 +50,20 @@ public class AggregatedSearchAction {
         new DownloadAction().execute(results);
     }
 
-    @SneakyThrows
     public static List<SearchResult> getSearchResults(String kw) {
+        return getSearchResults(kw, false);
+    }
+
+    /**
+     * 聚合搜索 + 可选的相似度过滤。
+     *
+     * @param kw             搜索关键字（书名）
+     * @param skipFilterSort true 时跳过 {@link SearchResultsHandler#filterSort}，
+     *                       供网页端走"书名+作者均严格相等"精确过滤路径使用；
+     *                       CLI 默认 false，保持原"猜意图相似度排序"行为
+     */
+    @SneakyThrows
+    public static List<SearchResult> getSearchResults(String kw, boolean skipFilterSort) {
         Console.log("<== 搜索关键字 “{}”", kw);
         List<SearchResult> results = Collections.synchronizedList(new ArrayList<>());
         List<Source> searchableSources = SourceUtils.getSearchableSources();
@@ -84,6 +96,9 @@ public class AggregatedSearchAction {
             boolean completed = latch.await(aggregateTimeoutSec, TimeUnit.SECONDS);
             if (!completed) {
                 Console.log(render("<== 聚合搜索超时 ({}s)，部分书源未响应，使用已收集到的结果", "yellow"), aggregateTimeoutSec);
+            }
+            if (skipFilterSort) {
+                return new ArrayList<>(results);
             }
             return AppConfigLoader.APP_CONFIG.getSearchFilter() == 1
                     ? SearchResultsHandler.filterSort(results, kw)
