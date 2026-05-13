@@ -45,6 +45,10 @@ public class WebServer {
         context.addServlet(AggregatedSearchServlet.class, "/search/aggregated");
         context.addServlet(DownloadProgressSseServlet.class, "/download-progress");
         context.addServlet(ConfigServlet.class, "/config");
+        // feat/web-active-report 新增：网页端"主动下载并回推 AI 后台"链路
+        context.addServlet(RemoteBookInfoServlet.class, "/remote-book-info");
+        context.addServlet(SourceTocServlet.class, "/source-toc");
+        context.addServlet(IncrementalDownloadServlet.class, "/incremental-download");
 
         ServletHolder staticHolder = new ServletHolder("default", DefaultServlet.class);
         // 不显示目录列表，但子文件依然可访问
