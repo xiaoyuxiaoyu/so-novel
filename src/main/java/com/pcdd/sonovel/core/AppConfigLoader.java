@@ -5,6 +5,7 @@ import cn.hutool.core.util.StrUtil;
 import cn.hutool.setting.Setting;
 import cn.hutool.setting.dialect.Props;
 import com.pcdd.sonovel.model.AppConfig;
+import com.pcdd.sonovel.model.RemoteBackendConfig;
 import com.pcdd.sonovel.util.EnvUtils;
 import com.pcdd.sonovel.util.FileUtils;
 import com.pcdd.sonovel.util.LangUtil;
@@ -28,6 +29,7 @@ public class AppConfigLoader {
     private final String SELECTION_WEB = "web";
     private final String SELECTION_COOKIE = "cookie";
     private final String SELECTION_PROXY = "proxy";
+    private final String SELECTION_REMOTE_BACKEND = "remote-backend";
     public final AppConfig APP_CONFIG = loadConfig();
 
     /**
@@ -106,7 +108,51 @@ public class AppConfigLoader {
         cfg.setProxyHost(getStrOrDefault(usr, "host", SELECTION_PROXY, "127.0.0.1"));
         cfg.setProxyPort(usr.getInt("port", SELECTION_PROXY, 7890));
 
+        // [remote-backend]
+        cfg.setRemoteBackend(loadRemoteBackend(usr));
+
         return cfg;
+    }
+
+    /**
+     * 加载 [remote-backend] section。
+     * mock=0 且 base-url 或 api-key 任一为空时抛 IllegalStateException 终止启动，
+     * 避免裸跑往未配置的地址打请求。
+     */
+    private RemoteBackendConfig loadRemoteBackend(Setting usr) {
+        RemoteBackendConfig c = new RemoteBackendConfig();
+        c.setBaseUrl(StrUtil.trimToEmpty(usr.getByGroup("base-url", SELECTION_REMOTE_BACKEND)));
+        c.setApiKey(StrUtil.trimToEmpty(usr.getByGroup("api-key", SELECTION_REMOTE_BACKEND)));
+        c.setConnectTimeoutMs(getIntOrDefault(usr, "connect-timeout-ms", SELECTION_REMOTE_BACKEND, 5000));
+        c.setReadTimeoutMs(getIntOrDefault(usr, "read-timeout-ms", SELECTION_REMOTE_BACKEND, 30000));
+        c.setMock(parseNullableInt(usr.getByGroup("mock", SELECTION_REMOTE_BACKEND)));
+        c.setPushBatchWarnThreshold(getIntOrDefault(usr, "push-batch-warn-threshold", SELECTION_REMOTE_BACKEND, 500));
+        c.setPushBatchRejectThreshold(getIntOrDefault(usr, "push-batch-reject-threshold", SELECTION_REMOTE_BACKEND, 2000));
+        c.setStartupPing(getIntOrDefault(usr, "startup-ping", SELECTION_REMOTE_BACKEND, 1));
+
+        if (!c.isMockMode()) {
+            if (StrUtil.isBlank(c.getBaseUrl()) || StrUtil.isBlank(c.getApiKey())) {
+                throw new IllegalStateException(
+                        "[remote-backend] mock=0 时 base-url 与 api-key 均必填，请检查 config.ini");
+            }
+        }
+        return c;
+    }
+
+    private Integer parseNullableInt(String raw) {
+        if (StrUtil.isBlank(raw)) {
+            return null;
+        }
+        try {
+            return Integer.parseInt(raw.trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private Integer getIntOrDefault(Setting setting, String key, String group, int defaultValue) {
+        Integer v = parseNullableInt(setting.getByGroup(key, group));
+        return v == null ? defaultValue : v;
     }
 
     // 修复 hutool 空串不能触发默认值的 bug

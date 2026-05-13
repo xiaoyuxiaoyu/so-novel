@@ -50,4 +50,7 @@ public class AppConfig {
     private String proxyHost;
     private Integer proxyPort;
 
+    // [remote-backend]
+    private RemoteBackendConfig remoteBackend;
+
 }
