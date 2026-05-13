@@ -116,6 +116,74 @@
   </main>
 </div>
 
+<!-- 增量下载弹窗：M3c 引入。状态机 input → confirm → (anchor/confirmLarge) → done/error -->
+<div class="modal-overlay hidden" id="downloadModal" role="dialog" aria-modal="true">
+  <div class="modal">
+    <header class="modal-header">
+      <h3>下载并上报到 AI 后台</h3>
+      <button class="modal-close" id="modalClose" aria-label="关闭">×</button>
+    </header>
+    <div class="modal-body">
+      <p class="modal-hint">书源：<strong id="modalSourceName"></strong></p>
+      <p class="modal-hint">书名：<strong id="modalBookName"></strong> / 作者：<strong id="modalAuthor"></strong></p>
+
+      <section data-step="input">
+        <label class="modal-field">
+          AI 小说书籍 ID
+          <input type="number" min="1" id="modalBookId" placeholder="正整数，必填" />
+        </label>
+        <label class="modal-field">
+          下载格式
+          <select id="modalFormat">
+            <option value="">默认</option>
+            <option value="epub">EPUB</option>
+            <option value="txt">TXT</option>
+            <option value="html">HTML</option>
+            <option value="pdf">PDF</option>
+          </select>
+        </label>
+      </section>
+
+      <section data-step="confirm" hidden>
+        <p>请确认下方信息与你要回灌的目标书一致：</p>
+        <div class="modal-card">
+          <p>《<strong id="modalConfirmName"></strong>》 — 作者：<strong id="modalConfirmAuthor"></strong></p>
+          <p>后台已有 <strong id="modalConfirmK"></strong> 章；最后章节：<span id="modalConfirmLastTitle"></span></p>
+        </div>
+      </section>
+
+      <section data-step="anchor" hidden>
+        <p class="modal-warn">未在源站目录中找到后台最后章节标题：<br>“<span id="modalAnchorTarget"></span>”</p>
+        <p class="modal-hint">请手动选择起点章节，将从所选章的下一章开始下载。</p>
+        <input type="search" id="modalAnchorFilter" placeholder="按章节标题筛选…" />
+        <p class="modal-hint" style="margin-top:8px">候选 Top 3：</p>
+        <ul class="modal-anchor-list" id="modalAnchorTop3"></ul>
+        <p class="modal-hint">完整目录（共 <span id="modalAnchorTotal"></span> 章）：</p>
+        <ul class="modal-anchor-list modal-anchor-full" id="modalAnchorFull"></ul>
+      </section>
+
+      <section data-step="confirmLarge" hidden>
+        <p class="modal-warn" id="modalLargeMsg"></p>
+        <p class="modal-hint">点击"继续下载"以确认；或点"取消"返回。</p>
+      </section>
+
+      <section data-step="done" hidden>
+        <p id="modalDoneSummary"></p>
+        <p class="modal-hint" id="modalDoneTaskId" hidden></p>
+        <ul class="modal-rejected" id="modalDoneRejected" hidden></ul>
+      </section>
+
+      <section data-step="error" hidden>
+        <p class="modal-error" id="modalErrorMsg"></p>
+      </section>
+    </div>
+    <footer class="modal-footer">
+      <button class="btn btn-secondary" id="modalCancel">取消</button>
+      <button class="btn btn-primary" id="modalNext" disabled>下一步</button>
+    </footer>
+  </div>
+</div>
+
 <div class="loading-container" id="tipEle">
   <div class="content">
     <svg class="loading-icon" viewBox="0 0 100 100">
@@ -211,20 +279,10 @@
       }
     }
 
-    const updateDefaultFormatLabels = () => {
-      const defaultExt = settingFormat.value ? settingFormat.value.toUpperCase() : serverConfig.extName.toUpperCase()
-      document.querySelectorAll('.dropdown-item.default-format').forEach(el => {
-        el.textContent = `${defaultExt} (默认)`
-      })
-    }
-
     settingsToggle.addEventListener('click', () => {
       settingsPanel.style.display = settingsPanel.style.display === 'none' ? '' : 'none'
     })
-    settingFormat.addEventListener('change', () => {
-      saveSettings()
-      updateDefaultFormatLabels()
-    })
+    settingFormat.addEventListener('change', saveSettings)
     settingLanguage.addEventListener('change', saveSettings)
     settingSearchLimit.addEventListener('change', () => {
       if (bookCache.length > 0) {
@@ -274,39 +332,6 @@
       window.open(`${window.location.origin}/book-download?filename=${encodeURIComponent(name)}`, '_blank')
     }
 
-    const handleDownloadToServer = async (index, format) => {
-      const item = bookCache[index]
-      if (!item) {
-        alert('参数错误，请重新搜索')
-        return
-      }
-      // 在发起请求前，显示弹窗
-      showTip(`正在解析目录...`)
-      const params = new URLSearchParams(item)
-      const finalFormat = format || settingFormat.value || ''
-      if (finalFormat) {
-        params.set('format', finalFormat)
-      }
-      const language = settingLanguage.value
-      if (language) {
-        params.set('language', language)
-      }
-      if (settingConcurrency.value) {
-        params.set('concurrency', settingConcurrency.value)
-      }
-      try {
-        await fetch(`/book-fetch?${params.toString()}`)
-        await fetchLocalBooks()
-        // fetch 会把响应当成 XHR 请求，返回一个 Response 对象，不会走浏览器默认的下载流程
-        window.location.href = `/book-download?filename=${latestFileName}`
-      } catch (error) {
-        console.error('Error downloading file to server:', error)
-        updateTip('下载失败')
-      } finally {
-        hideTip()
-      }
-    }
-
     const getPageSize = () => {
       const v = parseInt(settingSearchLimit.value)
       return v > 0 ? v : 20
@@ -323,7 +348,6 @@
       const end = Math.min(start + pageSize, bookCache.length)
       const pageData = bookCache.slice(start, end)
 
-      const defaultExt = settingFormat.value ? settingFormat.value.toUpperCase() : serverConfig.extName.toUpperCase()
       downloadTableBody.innerHTML = pageData.map((item, i) => {
         const index = start + i
         return `
@@ -335,16 +359,7 @@
         <td data-label="最后更新">${item.lastUpdateTime || ''}</td>
         <td data-label="书源">${item.sourceName}</td>
         <td data-label="操作">
-          <div class="download-action">
-            <button class="dropdown-toggle" data-index="${index}">下载为 <span class="dropdown-arrow">▾</span></button>
-            <div class="dropdown-menu">
-              <div class="dropdown-item default-format" data-format="" data-index="${index}">${defaultExt} (默认)</div>
-              <div class="dropdown-item" data-format="epub" data-index="${index}">EPUB</div>
-              <div class="dropdown-item" data-format="txt" data-index="${index}">TXT</div>
-              <div class="dropdown-item" data-format="html" data-index="${index}">HTML</div>
-              <div class="dropdown-item" data-format="pdf" data-index="${index}">PDF</div>
-            </div>
-          </div>
+          <button class="btn btn-primary btn-open-modal" data-index="${index}">下载…</button>
         </td>
         <td data-label="源站"><a href="${item.url}" target="_blank"><button class="btn btn-secondary btn-download">前往</button></a></td>
       </tr>`
@@ -490,7 +505,15 @@
         try {
           const data = JSON.parse(e.data)
           if (data.type === "download-progress") {
-            updateTip(`进度: ${data.index} / ${data.total}`)
+            updateTip(`下载进度: ${data.index} / ${data.total}`)
+          } else if (data.type === "report-progress") {
+            if (data.phase === "reporting") {
+              updateTip(`正在上报 ${data.count} 章到 AI 后台…`)
+            } else if (data.phase === "done") {
+              updateTip(`上报完成：新增 ${data.accepted}，覆盖 ${data.updated}，失败 ${data.rejected}`)
+            } else if (data.phase === "failed") {
+              updateTip(`上报失败：${data.msg || '未知错误'}`)
+            }
           }
         } catch (err) {
           console.error("❌ SSE 数据解析失败:", err, e.data)
@@ -530,29 +553,14 @@
       }
     })
 
-    // 使用事件委托处理下载下拉菜单
+    // 表格内"下载…"按钮触发增量下载弹窗
     downloadTableBody.addEventListener('click', (e) => {
-      const toggle = e.target.closest('.dropdown-toggle')
-      if (toggle) {
-        e.stopPropagation()
-        const action = toggle.closest('.download-action')
-        // 关闭其他已展开的下拉菜单
-        document.querySelectorAll('.download-action.open').forEach(el => {
-          if (el !== action) el.classList.remove('open')
-        })
-        action.classList.toggle('open')
-        return
+      const btn = e.target.closest('.btn-open-modal')
+      if (btn) {
+        const idx = parseInt(btn.dataset.index)
+        const item = bookCache[idx]
+        if (item) openDownloadModal(item)
       }
-      const item = e.target.closest('.dropdown-item')
-      if (item) {
-        item.closest('.download-action').classList.remove('open')
-        handleDownloadToServer(item.dataset.index, item.dataset.format)
-      }
-    })
-
-    // 点击页面其他区域关闭下拉菜单
-    document.addEventListener('click', () => {
-      document.querySelectorAll('.download-action.open').forEach(el => el.classList.remove('open'))
     })
 
     tableBody.addEventListener('click', (e) => {
@@ -561,6 +569,229 @@
         handleDownloadFileToLocal(button.dataset.filename)
       }
     })
+
+    // ========== 增量下载弹窗状态机（M3c） ==========
+    const downloadModal = document.getElementById('downloadModal')
+    const modalNext = document.getElementById('modalNext')
+    const modalCancel = document.getElementById('modalCancel')
+    const modalClose = document.getElementById('modalClose')
+    const modalBookId = document.getElementById('modalBookId')
+    const modalFormat = document.getElementById('modalFormat')
+
+    let modalState = 'idle'
+    let modalCtx = {}
+
+    const showStep = (step) => {
+      modalState = step
+      downloadModal.querySelectorAll('section[data-step]').forEach(s => {
+        s.hidden = s.dataset.step !== step
+      })
+      updateNextButton()
+    }
+
+    const updateNextButton = () => {
+      const map = {
+        input: { text: '查询书况', enabled: !!modalBookId.value && parseInt(modalBookId.value) >= 1 },
+        confirm: { text: '开始下载', enabled: true },
+        anchor: { text: '从所选下一章开始下', enabled: modalCtx.userAnchorOrder != null },
+        confirmLarge: { text: '继续下载', enabled: true },
+        done: { text: '关闭', enabled: true },
+        error: { text: '关闭', enabled: true }
+      }
+      const m = map[modalState]
+      if (m) {
+        modalNext.textContent = m.text
+        modalNext.disabled = !m.enabled
+      }
+    }
+
+    const openDownloadModal = (item) => {
+      modalCtx = { item: item, userAnchorOrder: null }
+      document.getElementById('modalSourceName').textContent = item.sourceName
+      document.getElementById('modalBookName').textContent = item.bookName
+      document.getElementById('modalAuthor').textContent = item.author
+      modalBookId.value = ''
+      modalFormat.value = settingFormat.value || ''
+      downloadModal.classList.remove('hidden')
+      showStep('input')
+    }
+
+    const closeDownloadModal = () => {
+      downloadModal.classList.add('hidden')
+      modalState = 'idle'
+      modalCtx = {}
+    }
+
+    const modalShowError = (msg) => {
+      document.getElementById('modalErrorMsg').textContent = msg
+      showStep('error')
+    }
+
+    modalBookId.addEventListener('input', updateNextButton)
+    modalCancel.addEventListener('click', closeDownloadModal)
+    modalClose.addEventListener('click', closeDownloadModal)
+
+    modalNext.addEventListener('click', async () => {
+      if (modalState === 'input') return stepInputToConfirm()
+      if (modalState === 'confirm') return stepStartDownload({ confirm: false, startOrder: null })
+      if (modalState === 'anchor') return stepStartDownload({ confirm: false, startOrder: modalCtx.userAnchorOrder + 1 })
+      if (modalState === 'confirmLarge') return stepStartDownload({ confirm: true, startOrder: modalCtx.lastStartOrder })
+      if (modalState === 'done' || modalState === 'error') return closeDownloadModal()
+    })
+
+    const stepInputToConfirm = async () => {
+      const id = parseInt(modalBookId.value)
+      if (!id || id < 1) return
+      modalNext.disabled = true
+      showTip('正在查询后台书况…')
+      try {
+        const resp = await fetch(`/remote-book-info?bookId=${id}`)
+        const json = await resp.json()
+        if (!resp.ok || json.code !== 200) {
+          modalShowError(json.message || '查询失败')
+          return
+        }
+        modalCtx.bookId = id
+        modalCtx.bookInfo = json.data
+        document.getElementById('modalConfirmName').textContent = json.data.bookName
+        document.getElementById('modalConfirmAuthor').textContent = json.data.author
+        document.getElementById('modalConfirmK').textContent = json.data.latestChapterNo
+        document.getElementById('modalConfirmLastTitle').textContent = json.data.latestChapterTitle || '(无章节)'
+        showStep('confirm')
+      } catch (e) {
+        modalShowError('网络异常：' + e.message)
+      } finally {
+        hideTip()
+      }
+    }
+
+    const stepStartDownload = async ({ confirm, startOrder }) => {
+      const item = modalCtx.item
+      const params = new URLSearchParams()
+      params.set('bookId', modalCtx.bookId)
+      params.set('url', item.url)
+      const fmt = modalFormat.value
+      if (fmt) params.set('format', fmt)
+      if (settingLanguage.value) params.set('language', settingLanguage.value)
+      if (settingConcurrency.value) params.set('concurrency', settingConcurrency.value)
+      if (startOrder != null) params.set('startOrder', startOrder)
+      if (confirm) params.set('confirm', 'true')
+      modalCtx.lastStartOrder = startOrder
+
+      modalNext.disabled = true
+      showTip('开始下载，整个过程请保持页面打开…')
+      try {
+        const resp = await fetch(`/incremental-download?${params.toString()}`)
+        const json = await resp.json()
+        if (!resp.ok || json.code !== 200) {
+          modalShowError(json.message || '下载失败')
+          return
+        }
+        const data = json.data
+        if (data.needAnchor) {
+          renderAnchorPick(data)
+          showStep('anchor')
+          return
+        }
+        if (data.needConfirm) {
+          document.getElementById('modalLargeMsg').textContent = data.message
+          showStep('confirmLarge')
+          return
+        }
+        if (data.noNewChapters) {
+          document.getElementById('modalDoneSummary').textContent = data.message
+          document.getElementById('modalDoneRejected').hidden = true
+          document.getElementById('modalDoneTaskId').hidden = true
+          showStep('done')
+          return
+        }
+        // 正常完成或部分失败
+        let summary = ''
+        const rejList = data.rejected || []
+        if (data.pushed) {
+          summary = `下载并上报完成：新增 ${data.accepted}，覆盖 ${data.updated}，失败 ${rejList.length}`
+          renderRejectedList(rejList)
+        } else if (data.reportFailed) {
+          summary = `已下载未上报：${data.errorMessage}\n本地副本已落地，待 M4 重新上报按钮接管。`
+        } else {
+          summary = '下载已完成。'
+        }
+        document.getElementById('modalDoneSummary').textContent = summary
+        const tEl = document.getElementById('modalDoneTaskId')
+        if (data.taskId) {
+          tEl.textContent = 'taskId: ' + data.taskId
+          tEl.hidden = false
+        } else {
+          tEl.hidden = true
+        }
+        showStep('done')
+        fetchLocalBooks()
+      } catch (e) {
+        modalShowError('下载异常：' + e.message)
+      } finally {
+        hideTip()
+      }
+    }
+
+    // ---- 锚点选择渲染 ----
+    const trigramSet = (s) => {
+      const set = new Set()
+      if (!s) return set
+      for (let i = 0; i <= s.length - 3; i++) set.add(s.substring(i, i + 3))
+      return set
+    }
+    const simpleSim = (a, b) => {
+      const sa = trigramSet(a || '')
+      const sb = trigramSet(b || '')
+      if (sa.size === 0 || sb.size === 0) return 0
+      let common = 0
+      sa.forEach(x => { if (sb.has(x)) common++ })
+      return common / Math.max(sa.size, sb.size)
+    }
+    const anchorLi = (c) => `<li data-order="${c.order}"><span class="order">#${c.order}</span>${c.title}</li>`
+
+    const renderAnchorPick = (data) => {
+      document.getElementById('modalAnchorTarget').textContent = data.latestTitle || '(空)'
+      document.getElementById('modalAnchorTotal').textContent = data.tocSize
+      const target = (data.latestTitle || '').trim()
+      const scored = data.toc.map(c => ({ ...c, _s: simpleSim(target, c.title) }))
+        .sort((a, b) => b._s - a._s)
+      const top3 = scored.slice(0, 3)
+      document.getElementById('modalAnchorTop3').innerHTML = top3.map(anchorLi).join('')
+      document.getElementById('modalAnchorFull').innerHTML = data.toc.map(anchorLi).join('')
+
+      const filterInput = document.getElementById('modalAnchorFilter')
+      filterInput.value = ''
+      filterInput.oninput = () => {
+        const kw = filterInput.value.trim().toLowerCase()
+        document.getElementById('modalAnchorFull').querySelectorAll('li').forEach(li => {
+          li.style.display = kw && !li.textContent.toLowerCase().includes(kw) ? 'none' : ''
+        })
+      }
+
+      modalCtx.userAnchorOrder = null
+      const onPick = (e) => {
+        const li = e.target.closest('li[data-order]')
+        if (!li) return
+        downloadModal.querySelectorAll('.modal-anchor-list li.selected').forEach(x => x.classList.remove('selected'))
+        li.classList.add('selected')
+        modalCtx.userAnchorOrder = parseInt(li.dataset.order)
+        updateNextButton()
+      }
+      document.getElementById('modalAnchorTop3').onclick = onPick
+      document.getElementById('modalAnchorFull').onclick = onPick
+    }
+
+    const renderRejectedList = (rejected) => {
+      const ul = document.getElementById('modalDoneRejected')
+      if (!rejected || rejected.length === 0) {
+        ul.hidden = true
+        ul.innerHTML = ''
+        return
+      }
+      ul.innerHTML = rejected.map(r => `<li>#${r.chapterNo} ${r.title} - ${r.reason}</li>`).join('')
+      ul.hidden = false
+    }
 
     // 页面加载时执行
     initSSE()
