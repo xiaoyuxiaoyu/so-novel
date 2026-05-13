@@ -52,6 +52,7 @@ public class WebServer {
         context.addServlet(RepushServlet.class, "/repush");
         context.addServlet(RemotePingServlet.class, "/remote-ping");
         context.addServlet(BackendStatusServlet.class, "/backend-status");
+        context.addServlet(TaskListServlet.class, "/tasks");
 
         ServletHolder staticHolder = new ServletHolder("default", DefaultServlet.class);
         // 不显示目录列表，但子文件依然可访问

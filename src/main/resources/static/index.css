@@ -769,3 +769,21 @@ input[disabled] {
 .backend-status-ok { background: #d4edda; color: #155724; }
 .backend-status-failed { background: #f8d7da; color: #721c24; }
 .backend-status-unknown { background: #e2e3e5; color: #383d41; }
+
+/* ===== 上报任务状态徽章（M4c） ===== */
+.task-status {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 0.85em;
+}
+.task-status-ok { background: #d4edda; color: #155724; }
+.task-status-warn { background: #fff3cd; color: #856404; }
+.task-status-failed { background: #f8d7da; color: #721c24; }
+.task-status-pending { background: #cce5ff; color: #004085; }
+.task-rejected-hint {
+  font-size: 0.8em;
+  color: #856404;
+  margin-left: 6px;
+}
+.btn-repush { font-size: 0.88em; padding: 4px 10px; }

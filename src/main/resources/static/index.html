@@ -139,6 +139,32 @@
       </div>
     </section>
 
+    <!-- 上报任务列表（M4c） -->
+    <section class="container result-container">
+      <div class="section-header">
+        <h2 class="section-title">上报任务</h2>
+        <button class="btn btn-primary" id="refreshTasks">刷新</button>
+      </div>
+      <div class="body-container" id="tb3">
+        <div class="table-responsive">
+          <table class="data-table">
+            <thead>
+            <tr>
+              <th scope="col">书 ID</th>
+              <th scope="col">书源</th>
+              <th scope="col">章节数</th>
+              <th scope="col">状态</th>
+              <th scope="col">时间</th>
+              <th scope="col">操作</th>
+            </tr>
+            </thead>
+            <tbody id="taskTableBody">
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
   </main>
 </div>
 
@@ -228,13 +254,16 @@
     const downloadSearchAuthor = document.getElementById('downloadSearchAuthor')
     const searchButton = document.getElementById('searchButton')
     const refreshListButton = document.getElementById('refreshList')
+    const refreshTasksButton = document.getElementById('refreshTasks')
     const downloadTableBody = document.getElementById('downloadTableBody')
     const tableBody = document.getElementById('tableBody')
+    const taskTableBody = document.getElementById('taskTableBody')
     const tipEle = document.getElementById('tipEle')
     const tipText = document.getElementById('tipText')
     const versionTag = document.getElementById("versionTag");
     const tb1 = document.getElementById('tb1');
     const tb2 = document.getElementById('tb2');
+    const tb3 = document.getElementById('tb3');
 
     let bookCache = []
     let currentPage = 1
@@ -752,6 +781,7 @@
         }
         showStep('done')
         fetchLocalBooks()
+        fetchTasks()
       } catch (e) {
         modalShowError('下载异常：' + e.message)
       } finally {
@@ -818,6 +848,98 @@
       ul.innerHTML = rejected.map(r => `<li>#${r.chapterNo} ${r.title} - ${r.reason}</li>`).join('')
       ul.hidden = false
     }
+
+    // ========== 上报任务列表（M4c） ==========
+    const TASK_STATUS_LABEL = {
+      DOWNLOADED_NOT_PUSHED: { text: '未上报', cls: 'task-status-pending' },
+      PUSHED: { text: '已上报', cls: 'task-status-ok' },
+      PARTIAL: { text: '部分失败', cls: 'task-status-warn' },
+      FAILED: { text: '上报失败', cls: 'task-status-failed' }
+    }
+
+    const fmtTaskTime = (ts) => {
+      if (!ts) return ''
+      const d = new Date(ts)
+      const pad = (n) => String(n).padStart(2, '0')
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+    }
+
+    const renderTaskTable = (tasks) => {
+      if (!tasks || tasks.length === 0) {
+        taskTableBody.innerHTML = ''
+        tb3.style.display = 'none'
+        return
+      }
+      taskTableBody.innerHTML = tasks.map(t => {
+        const label = TASK_STATUS_LABEL[t.status] || { text: t.status || '未知', cls: 'task-status-pending' }
+        let statusHtml = `<span class="task-status ${label.cls}">${label.text}</span>`
+        if (t.status === 'PARTIAL' && t.rejectedCount > 0) {
+          statusHtml += ` <span class="task-rejected-hint">${t.rejectedCount} 章失败</span>`
+        }
+        if (t.status === 'FAILED' && t.errorMessage) {
+          statusHtml += ` <span class="task-rejected-hint" title="${escapeHtml(t.errorMessage)}">…</span>`
+        }
+        const canRepush = t.status && t.status !== 'PUSHED'
+        const action = canRepush
+          ? `<button class="btn btn-secondary btn-repush" data-taskid="${t.taskId}">重新上报</button>`
+          : ''
+        return `
+          <tr>
+            <td data-label="书 ID">${t.bookId}</td>
+            <td data-label="书源">${t.sourceName || ''}</td>
+            <td data-label="章节数">${t.chapterCount}</td>
+            <td data-label="状态">${statusHtml}</td>
+            <td data-label="时间">${fmtTaskTime(t.updatedAt || t.createdAt)}</td>
+            <td data-label="操作">${action}</td>
+          </tr>`
+      }).join('')
+      tb3.style.display = ''
+    }
+
+    const escapeHtml = (s) => {
+      if (!s) return ''
+      return String(s).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[c]))
+    }
+
+    const fetchTasks = async () => {
+      try {
+        const resp = await fetch('/tasks')
+        const json = await resp.json()
+        if (json && json.data) renderTaskTable(json.data)
+      } catch (e) {
+        console.error('fetchTasks failed:', e)
+      }
+    }
+
+    const repushTask = async (taskId, btn) => {
+      if (!taskId) return
+      btn.disabled = true
+      const oldText = btn.textContent
+      btn.textContent = '上报中…'
+      showTip('正在重新上报到 AI 后台…')
+      try {
+        const resp = await fetch(`/repush?taskId=${encodeURIComponent(taskId)}`)
+        const json = await resp.json()
+        if (!resp.ok || json.code !== 200) {
+          alert((json && json.message) || '重新上报失败')
+        }
+      } catch (e) {
+        alert('重新上报异常：' + e.message)
+      } finally {
+        hideTip()
+        btn.disabled = false
+        btn.textContent = oldText
+        fetchTasks()  // 刷新状态
+      }
+    }
+
+    refreshTasksButton.addEventListener('click', fetchTasks)
+    taskTableBody.addEventListener('click', (e) => {
+      const btn = e.target.closest('.btn-repush')
+      if (btn) repushTask(btn.dataset.taskid, btn)
+    })
 
     // ========== AI 后台健康状态（M4b） ==========
     const backendBanner = document.getElementById('backendBanner')
@@ -894,8 +1016,10 @@
     fetchConfig()
     fetchLocalBooks()
     fetchBackendStatus()
+    fetchTasks()
     tb1.style.display = 'none';
     tb2.style.display = 'none';
+    tb3.style.display = 'none';
   })
 </script>
 </body>
