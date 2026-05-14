@@ -84,6 +84,26 @@ class ReportCollectorTest {
     }
 
     @Test
+    void leadingTitleStripped_whenContentStartsWithTitle() {
+        // 模拟 ChapterRenderer 渲染 txt 后的 content 形态：以 title 开头 + 双换行 + 正文段
+        ReportCollector rc = new ReportCollector("task-strip", tmpWorkDir.toString());
+        rc.collect(Chapter.builder()
+                .order(1).title("第 1 章 起")
+                .content("第 1 章 起\n\n　　段一\n　　段二")
+                .build());
+        String content = rc.snapshot().get(0).getContent();
+        assertTrue(!content.startsWith("第 1 章"), "标题应被剥掉，实际: " + content);
+        assertTrue(content.contains("段一"));
+    }
+
+    @Test
+    void stripLeadingTitle_noOpWhenNotPrefixed() {
+        assertEquals("纯正文", ReportCollector.stripLeadingTitle("纯正文", "第 1 章 起"));
+        assertEquals("纯正文", ReportCollector.stripLeadingTitle("纯正文", ""));
+        assertEquals("纯正文", ReportCollector.stripLeadingTitle("纯正文", null));
+    }
+
+    @Test
     void nullChapterIsIgnored() {
         ReportCollector rc = new ReportCollector("task-4", tmpWorkDir.toString());
         rc.collect(null);

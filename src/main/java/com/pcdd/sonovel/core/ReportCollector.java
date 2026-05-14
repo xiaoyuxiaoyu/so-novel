@@ -54,11 +54,15 @@ public class ReportCollector {
         if (chapter == null || chapter.getOrder() == null) {
             return;
         }
+        String title = chapter.getTitle() == null ? "" : chapter.getTitle();
         String plain = HtmlToPlainText.from(chapter.getContent());
+        // ChapterRenderer 渲染 txt 时会在正文头部前置 title（见 ChapterRenderer#renderTxtFormat），
+        // 上报到 AI 后台前剥掉这段重复 title，避免章节内容里再出现一次标题。
+        plain = stripLeadingTitle(plain, title);
 
         queue.add(RemoteChapterPushItem.builder()
                 .chapterNo(chapter.getOrder())   // 占位，回推前重写
-                .title(chapter.getTitle() == null ? "" : chapter.getTitle())
+                .title(title)
                 .content(plain)
                 .build());
 
@@ -66,6 +70,21 @@ public class ReportCollector {
         FileUtil.writeString(plain,
                 new File(reportDir, chapter.getOrder() + ".txt"),
                 StandardCharsets.UTF_8);
+    }
+
+    /**
+     * 若纯文本以 {@code title} 开头（容忍前置空白），剥掉这段连同其后的空白行；
+     * title 为空或纯文本不以其开头时原样返回。
+     */
+    static String stripLeadingTitle(String content, String title) {
+        if (content == null) return "";
+        if (StrUtil.isBlank(title)) return content;
+        String t = title.trim();
+        String leading = content.replaceFirst("^\\s+", "");
+        if (!leading.startsWith(t)) {
+            return content;
+        }
+        return leading.substring(t.length()).replaceFirst("^\\s+", "");
     }
 
     /** 按源站 order 升序返回快照，IncrementalDownloadServlet 在此基础上重写 chapter_no。 */

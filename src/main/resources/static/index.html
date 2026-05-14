@@ -168,9 +168,9 @@
   </main>
 </div>
 
-<!-- 增量下载弹窗：M3c 引入。状态机 input → confirm → (anchor/confirmLarge) → done/error -->
+<!-- 增量下载弹窗（v2）：状态机 input → preview → done/error -->
 <div class="modal-overlay hidden" id="downloadModal" role="dialog" aria-modal="true">
-  <div class="modal">
+  <div class="modal modal-wide">
     <header class="modal-header">
       <h3>下载并上报到 AI 后台</h3>
       <button class="modal-close" id="modalClose" aria-label="关闭">×</button>
@@ -186,27 +186,33 @@
         </label>
       </section>
 
-      <section data-step="confirm" hidden>
-        <p>请确认下方信息与你要回灌的目标书一致：</p>
+      <section data-step="preview" hidden>
         <div class="modal-card">
           <p>《<strong id="modalConfirmName"></strong>》 — 作者：<strong id="modalConfirmAuthor"></strong></p>
           <p>后台已有 <strong id="modalConfirmK"></strong> 章；最后章节：<span id="modalConfirmLastTitle"></span></p>
         </div>
-      </section>
-
-      <section data-step="anchor" hidden>
-        <p class="modal-warn">未在源站目录中找到后台最后章节标题：<br>“<span id="modalAnchorTarget"></span>”</p>
-        <p class="modal-hint">请手动选择起点章节，将从所选章的下一章开始下载。</p>
-        <input type="search" id="modalAnchorFilter" placeholder="按章节标题筛选…" />
-        <p class="modal-hint" style="margin-top:8px">候选 Top 3：</p>
-        <ul class="modal-anchor-list" id="modalAnchorTop3"></ul>
-        <p class="modal-hint">完整目录（共 <span id="modalAnchorTotal"></span> 章）：</p>
-        <ul class="modal-anchor-list modal-anchor-full" id="modalAnchorFull"></ul>
-      </section>
-
-      <section data-step="confirmLarge" hidden>
-        <p class="modal-warn" id="modalLargeMsg"></p>
-        <p class="modal-hint">点击"继续下载"以确认；或点"取消"返回。</p>
+        <p class="modal-warn" id="modalAnchorMissBanner" hidden>
+          未在源站目录中匹配到后台最后章节标题，默认从源站第 1 章开始，请手动确认起点。
+        </p>
+        <div class="modal-range">
+          <label>起始章节
+            <input type="number" min="1" id="modalStartOrder" />
+          </label>
+          <label>结束章节
+            <input type="number" min="1" id="modalEndOrder" />
+          </label>
+          <span class="modal-range-info" id="modalRangeInfo"></span>
+        </div>
+        <p class="modal-error" id="modalRangeError" hidden></p>
+        <p class="modal-hint">源站目录（共 <span id="modalTocTotal"></span> 章，点击章节标题可在新窗口预览源站内容）：</p>
+        <div class="modal-toc-wrap">
+          <table class="modal-toc">
+            <thead>
+              <tr><th class="col-no">No</th><th>章节标题</th></tr>
+            </thead>
+            <tbody id="modalTocBody"></tbody>
+          </table>
+        </div>
       </section>
 
       <section data-step="done" hidden>
@@ -615,12 +621,16 @@
       }
     })
 
-    // ========== 增量下载弹窗状态机（M3c） ==========
+    // ========== 增量下载弹窗状态机（v2：input → preview → done/error） ==========
     const downloadModal = document.getElementById('downloadModal')
     const modalNext = document.getElementById('modalNext')
     const modalCancel = document.getElementById('modalCancel')
     const modalClose = document.getElementById('modalClose')
     const modalBookId = document.getElementById('modalBookId')
+    const modalStartOrder = document.getElementById('modalStartOrder')
+    const modalEndOrder = document.getElementById('modalEndOrder')
+    const modalRangeInfo = document.getElementById('modalRangeInfo')
+    const modalRangeError = document.getElementById('modalRangeError')
 
     let modalState = 'idle'
     let modalCtx = {}
@@ -633,24 +643,51 @@
       updateNextButton()
     }
 
+    // 计算当前 preview 步的下载章数 + 校验合法性。返回 { count, error }。
+    const computeRange = () => {
+      const start = parseInt(modalStartOrder.value)
+      const end = parseInt(modalEndOrder.value)
+      const tocSize = modalCtx.tocSize || 0
+      const maxBatch = modalCtx.maxBatch || 500
+      if (!start || start < 1) return { count: 0, error: '起始章节必须为正整数' }
+      if (!end || end < 1) return { count: 0, error: '结束章节必须为正整数' }
+      if (end < start) return { count: 0, error: '结束章节必须 >= 起始章节' }
+      if (end > tocSize) return { count: 0, error: `结束章节超出源站总章数 ${tocSize}` }
+      const count = end - start + 1
+      if (count > maxBatch) return { count, error: `单次最多下载 ${maxBatch} 章，当前 ${count} 章超限` }
+      return { count, error: null }
+    }
+
     const updateNextButton = () => {
-      const map = {
-        input: { text: '查询书况', enabled: !!modalBookId.value && parseInt(modalBookId.value) >= 1 },
-        confirm: { text: '开始下载', enabled: true },
-        anchor: { text: '从所选下一章开始下', enabled: modalCtx.userAnchorOrder != null },
-        confirmLarge: { text: '继续下载', enabled: true },
-        done: { text: '关闭', enabled: true },
-        error: { text: '关闭', enabled: true }
+      if (modalState === 'input') {
+        modalNext.textContent = '查询并预览'
+        modalNext.disabled = !modalBookId.value || parseInt(modalBookId.value) < 1
+        return
       }
-      const m = map[modalState]
-      if (m) {
-        modalNext.textContent = m.text
-        modalNext.disabled = !m.enabled
+      if (modalState === 'preview') {
+        const r = computeRange()
+        if (r.error) {
+          modalRangeError.textContent = r.error
+          modalRangeError.hidden = false
+          modalRangeInfo.textContent = ''
+          modalNext.textContent = '下载并上报'
+          modalNext.disabled = true
+        } else {
+          modalRangeError.hidden = true
+          modalRangeInfo.textContent = `本次将下载并上报 ${r.count} 章`
+          modalNext.textContent = `下载并上报 ${r.count} 章`
+          modalNext.disabled = false
+        }
+        return
+      }
+      if (modalState === 'done' || modalState === 'error') {
+        modalNext.textContent = '关闭'
+        modalNext.disabled = false
       }
     }
 
     const openDownloadModal = (item) => {
-      modalCtx = { item: item, userAnchorOrder: null }
+      modalCtx = { item: item }
       document.getElementById('modalSourceName').textContent = item.sourceName
       document.getElementById('modalBookName').textContent = item.bookName
       document.getElementById('modalAuthor').textContent = item.author
@@ -671,36 +708,41 @@
     }
 
     modalBookId.addEventListener('input', updateNextButton)
+    modalStartOrder.addEventListener('input', updateNextButton)
+    modalEndOrder.addEventListener('input', updateNextButton)
     modalCancel.addEventListener('click', closeDownloadModal)
     modalClose.addEventListener('click', closeDownloadModal)
 
     modalNext.addEventListener('click', async () => {
-      if (modalState === 'input') return stepInputToConfirm()
-      if (modalState === 'confirm') return stepStartDownload({ confirm: false, startOrder: null })
-      if (modalState === 'anchor') return stepStartDownload({ confirm: false, startOrder: modalCtx.userAnchorOrder + 1 })
-      if (modalState === 'confirmLarge') return stepStartDownload({ confirm: true, startOrder: modalCtx.lastStartOrder })
+      if (modalState === 'input') return stepInputToPreview()
+      if (modalState === 'preview') return stepStartDownload()
       if (modalState === 'done' || modalState === 'error') return closeDownloadModal()
     })
 
-    const stepInputToConfirm = async () => {
+    const stepInputToPreview = async () => {
       const id = parseInt(modalBookId.value)
       if (!id || id < 1) return
+      const item = modalCtx.item
+      const params = new URLSearchParams()
+      params.set('bookId', id)
+      params.set('url', item.url)
       modalNext.disabled = true
-      showTip('正在查询后台书况…')
+      showTip('正在查询后台书况 + 抓取源站目录…')
       try {
-        const resp = await fetch(`/remote-book-info?bookId=${id}`)
+        const resp = await fetch(`/toc-preview?${params.toString()}`)
         const json = await resp.json()
         if (!resp.ok || json.code !== 200) {
           modalShowError(json.message || '查询失败')
           return
         }
+        const data = json.data
         modalCtx.bookId = id
-        modalCtx.bookInfo = json.data
-        document.getElementById('modalConfirmName').textContent = json.data.bookName
-        document.getElementById('modalConfirmAuthor').textContent = json.data.author
-        document.getElementById('modalConfirmK').textContent = json.data.latestChapterNo
-        document.getElementById('modalConfirmLastTitle').textContent = json.data.latestChapterTitle || '(无章节)'
-        showStep('confirm')
+        modalCtx.bookInfo = data.bookInfo
+        modalCtx.toc = data.toc
+        modalCtx.tocSize = data.toc.length
+        modalCtx.maxBatch = data.maxBatch
+        renderPreview(data)
+        showStep('preview')
       } catch (e) {
         modalShowError('网络异常：' + e.message)
       } finally {
@@ -708,19 +750,48 @@
       }
     }
 
-    const stepStartDownload = async ({ confirm, startOrder }) => {
+    const renderPreview = (data) => {
+      const info = data.bookInfo
+      document.getElementById('modalConfirmName').textContent = info.bookName
+      document.getElementById('modalConfirmAuthor').textContent = info.author
+      document.getElementById('modalConfirmK').textContent = info.latestChapterNo
+      document.getElementById('modalConfirmLastTitle').textContent = info.latestChapterTitle || '(无章节)'
+      const missBanner = document.getElementById('modalAnchorMissBanner')
+      missBanner.hidden = data.matchedIndex != null
+
+      modalStartOrder.value = data.defaultStartOrder
+      modalEndOrder.value = data.defaultEndOrder
+      modalStartOrder.min = 1
+      modalStartOrder.max = data.toc.length
+      modalEndOrder.min = 1
+      modalEndOrder.max = data.toc.length
+
+      document.getElementById('modalTocTotal').textContent = data.toc.length
+      const startOrder = data.defaultStartOrder
+      const tbody = document.getElementById('modalTocBody')
+      tbody.innerHTML = data.toc.map(c => {
+        const cls = c.order === startOrder ? ' class="toc-row-start"' : ''
+        const link = c.url
+          ? `<a href="${c.url}" target="_blank" rel="noopener">${c.title}</a>`
+          : c.title
+        return `<tr${cls}><td>${c.order}</td><td>${link}</td></tr>`
+      }).join('')
+    }
+
+    const stepStartDownload = async () => {
+      const r = computeRange()
+      if (r.error) return
       const item = modalCtx.item
       const params = new URLSearchParams()
       params.set('bookId', modalCtx.bookId)
       params.set('url', item.url)
+      params.set('startOrder', modalStartOrder.value)
+      params.set('endOrder', modalEndOrder.value)
       if (settingLanguage.value) params.set('language', settingLanguage.value)
       if (settingConcurrency.value) params.set('concurrency', settingConcurrency.value)
-      if (startOrder != null) params.set('startOrder', startOrder)
-      if (confirm) params.set('confirm', 'true')
-      modalCtx.lastStartOrder = startOrder
 
       modalNext.disabled = true
-      showTip('开始下载，整个过程请保持页面打开…')
+      showTip(`开始下载 ${r.count} 章并上报，整个过程请保持页面打开…`)
       try {
         const resp = await fetch(`/incremental-download?${params.toString()}`)
         const json = await resp.json()
@@ -729,31 +800,13 @@
           return
         }
         const data = json.data
-        if (data.needAnchor) {
-          renderAnchorPick(data)
-          showStep('anchor')
-          return
-        }
-        if (data.needConfirm) {
-          document.getElementById('modalLargeMsg').textContent = data.message
-          showStep('confirmLarge')
-          return
-        }
-        if (data.noNewChapters) {
-          document.getElementById('modalDoneSummary').textContent = data.message
-          document.getElementById('modalDoneRejected').hidden = true
-          document.getElementById('modalDoneTaskId').hidden = true
-          showStep('done')
-          return
-        }
-        // 正常完成或部分失败
         let summary = ''
         const rejList = data.rejected || []
         if (data.pushed) {
           summary = `下载并上报完成：新增 ${data.accepted}，覆盖 ${data.updated}，失败 ${rejList.length}`
           renderRejectedList(rejList)
         } else if (data.reportFailed) {
-          summary = `已下载未上报：${data.errorMessage}\n本地副本已落地，待 M4 重新上报按钮接管。`
+          summary = `已下载未上报：${data.errorMessage}\n本地副本已落地，可在下方任务列表点"重新上报"。`
         } else {
           summary = '下载已完成。'
         }
@@ -773,55 +826,6 @@
       } finally {
         hideTip()
       }
-    }
-
-    // ---- 锚点选择渲染 ----
-    const trigramSet = (s) => {
-      const set = new Set()
-      if (!s) return set
-      for (let i = 0; i <= s.length - 3; i++) set.add(s.substring(i, i + 3))
-      return set
-    }
-    const simpleSim = (a, b) => {
-      const sa = trigramSet(a || '')
-      const sb = trigramSet(b || '')
-      if (sa.size === 0 || sb.size === 0) return 0
-      let common = 0
-      sa.forEach(x => { if (sb.has(x)) common++ })
-      return common / Math.max(sa.size, sb.size)
-    }
-    const anchorLi = (c) => `<li data-order="${c.order}"><span class="order">#${c.order}</span>${c.title}</li>`
-
-    const renderAnchorPick = (data) => {
-      document.getElementById('modalAnchorTarget').textContent = data.latestTitle || '(空)'
-      document.getElementById('modalAnchorTotal').textContent = data.tocSize
-      const target = (data.latestTitle || '').trim()
-      const scored = data.toc.map(c => ({ ...c, _s: simpleSim(target, c.title) }))
-        .sort((a, b) => b._s - a._s)
-      const top3 = scored.slice(0, 3)
-      document.getElementById('modalAnchorTop3').innerHTML = top3.map(anchorLi).join('')
-      document.getElementById('modalAnchorFull').innerHTML = data.toc.map(anchorLi).join('')
-
-      const filterInput = document.getElementById('modalAnchorFilter')
-      filterInput.value = ''
-      filterInput.oninput = () => {
-        const kw = filterInput.value.trim().toLowerCase()
-        document.getElementById('modalAnchorFull').querySelectorAll('li').forEach(li => {
-          li.style.display = kw && !li.textContent.toLowerCase().includes(kw) ? 'none' : ''
-        })
-      }
-
-      modalCtx.userAnchorOrder = null
-      const onPick = (e) => {
-        const li = e.target.closest('li[data-order]')
-        if (!li) return
-        downloadModal.querySelectorAll('.modal-anchor-list li.selected').forEach(x => x.classList.remove('selected'))
-        li.classList.add('selected')
-        modalCtx.userAnchorOrder = parseInt(li.dataset.order)
-        updateNextButton()
-      }
-      document.getElementById('modalAnchorTop3').onclick = onPick
-      document.getElementById('modalAnchorFull').onclick = onPick
     }
 
     const renderRejectedList = (rejected) => {

@@ -60,15 +60,65 @@ public class RemoteBackendClient {
         return parseBookInfo(data);
     }
 
-    /** 上报增量章节：本次下载完成后整体回灌 */
-    public RemotePushResponse reportChapters(RemotePushRequest req) {
+    /**
+     * 上报增量章节：本次下载完成后整体回灌。
+     * <p>
+     * 内部按 {@link RemoteBackendConfig#getReportBatchSize()} 切分多个 batch 串行发送，
+     * 避免一次性 body 过大触发 read-timeout。任意 batch 失败（重试 2 次仍失败）直接抛出，
+     * 已上报 batch 由后端 upsert 保证幂等，重推按钮可安全续推。
+     * <p>
+     * 每个 batch 发送前通过 {@code progress} 回调汇报阶段，便于 SSE 推送进度。
+     * 回调可为 null。
+     */
+    public RemotePushResponse reportChapters(RemotePushRequest req, BatchProgressListener progress) {
         RemoteBackendConfig cfg = currentConfig();
         if (cfg.isMockMode()) {
             return MockRemoteBackend.reportChapters(req);
         }
-        JSONObject body = serializePushRequest(req);
-        JSONObject data = callWithRetry(cfg, PATH_REPORT_CHAPTERS, body);
-        return parsePushResponse(data);
+        List<RemoteChapterPushItem> all = req.getChapters() == null ? List.of() : req.getChapters();
+        int batchSize = cfg.getReportBatchSize() == null || cfg.getReportBatchSize() < 1
+                ? 100 : cfg.getReportBatchSize();
+        int total = all.size();
+        int totalBatches = total == 0 ? 0 : (total + batchSize - 1) / batchSize;
+
+        int acceptedSum = 0;
+        int updatedSum = 0;
+        List<RemoteRejectedChapter> rejectedAll = new ArrayList<>();
+        for (int i = 0; i < totalBatches; i++) {
+            int from = i * batchSize;
+            int to = Math.min(from + batchSize, total);
+            List<RemoteChapterPushItem> sub = all.subList(from, to);
+            if (progress != null) {
+                progress.onBatchStart(i + 1, totalBatches, sub.size());
+            }
+            RemotePushRequest batchReq = RemotePushRequest.builder()
+                    .bookId(req.getBookId())
+                    .chapters(sub)
+                    .clientMeta(req.getClientMeta())
+                    .build();
+            JSONObject body = serializePushRequest(batchReq);
+            JSONObject data = callWithRetry(cfg, PATH_REPORT_CHAPTERS, body);
+            RemotePushResponse resp = parsePushResponse(data);
+            acceptedSum += resp.getAcceptedCount();
+            updatedSum += resp.getUpdatedCount();
+            if (resp.getRejected() != null) rejectedAll.addAll(resp.getRejected());
+        }
+        return RemotePushResponse.builder()
+                .acceptedCount(acceptedSum)
+                .updatedCount(updatedSum)
+                .rejected(rejectedAll)
+                .build();
+    }
+
+    /** 兼容旧调用方：等价于 reportChapters(req, null) */
+    public RemotePushResponse reportChapters(RemotePushRequest req) {
+        return reportChapters(req, null);
+    }
+
+    /** batch 进度回调接口。 */
+    @FunctionalInterface
+    public interface BatchProgressListener {
+        void onBatchStart(int batchIndex, int totalBatches, int batchSize);
     }
 
     /** 健康检查 */

@@ -5,13 +5,11 @@ import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONUtil;
 import com.pcdd.sonovel.core.AppConfigLoader;
 import com.pcdd.sonovel.core.Crawler;
-import com.pcdd.sonovel.core.IncrementalAnchorResolver;
 import com.pcdd.sonovel.core.ReportCollector;
 import com.pcdd.sonovel.exception.RemoteBackendException;
 import com.pcdd.sonovel.model.AppConfig;
 import com.pcdd.sonovel.model.Chapter;
 import com.pcdd.sonovel.model.LocalTaskState;
-import com.pcdd.sonovel.model.RemoteBackendConfig;
 import com.pcdd.sonovel.model.Rule;
 import com.pcdd.sonovel.model.remote.RemoteBookInfo;
 import com.pcdd.sonovel.model.remote.RemoteChapterPushItem;
@@ -31,66 +29,73 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
 
 /**
- * 网页端"主动下载并回推 AI 后台"主体 Servlet。
+ * 网页端"主动下载并回推 AI 后台"主体 Servlet（v2 重构）。
  *
  * <p>请求样例：
- * <pre>GET /incremental-download?bookId=123&url=https://...&format=epub
- *     &language=zh_cn&concurrency=10&startOrder=可选&confirm=可选
+ * <pre>GET /incremental-download?bookId=123&url=https://...
+ *     &startOrder=13&endOrder=512
+ *     &language=zh_cn&concurrency=10
  * </pre>
  *
- * <p>串联流程（沿用既有 /book-fetch 模式：fetch 同步挂连接、进度走 /download-progress SSE）：
+ * <p>v2 流程（配合 {@link TocPreviewServlet} 单步预览页）：
  * <ol>
- *   <li>校验入参 + 调 {@link RemoteBackendClient#getBookInfo(int)} 拿后台书况</li>
- *   <li>拉源站完整 toc</li>
- *   <li>若入参 startOrder 非空 → 从该处下；否则用
- *       {@link IncrementalAnchorResolver#resolve} 反查 latest_chapter_title</li>
- *   <li>未命中 → 返 {@code data.needAnchor=true} + toc，让前端切到锚点选择</li>
- *   <li>体量 &gt; reject 阈值 → 直接拒；&gt; warn 阈值且未 confirm → 返
- *       {@code data.needConfirm=true} 让前端二次确认</li>
- *   <li>正常分支：Crawler 同步下载 + {@link ReportCollector} 收集纯文本副本</li>
+ *   <li>校验入参（startOrder/endOrder 必填；(end-start+1) ≤ {@link TocPreviewServlet#MAX_BATCH}）</li>
+ *   <li>查 AI 后台书况，仅取 {@code latest_chapter_no} 用于回推章节号续接</li>
+ *   <li>拉源站完整 toc，切片 [startOrder, endOrder]</li>
+ *   <li>Crawler 同步下载 + {@link ReportCollector} 收集纯文本副本</li>
  *   <li>构造回推体（chapter_no 从 {@code latest_chapter_no + 1} 起递增重写），
- *       调 {@link RemoteBackendClient#reportChapters}</li>
- *   <li>回推前后通过 SSE {@code type=report-progress} 事件推送阶段</li>
+ *       调 {@link RemoteBackendClient#reportChapters} 分批回推</li>
+ *   <li>每批回推前通过 SSE 推送进度</li>
  *   <li>HTTP 响应汇总 {accepted/updated/rejected/taskId}</li>
  * </ol>
  *
- * <p>本期不持久化 task 状态（{@code .so-novel/tasks.json} 由 M4 引入）。
- * 回推失败时 reports 副本已在 {@code .so-novel/reports/{taskId}/} 落盘，待 M4
- * RepushServlet 接管重推。
+ * <p>不再返回 needAnchor / needConfirm —— 锚点匹配与体量提示都在
+ * {@link TocPreviewServlet} 已经一次性给到前端，前端确认后直接打到本接口。
  *
  * @author 石宇涛
  * Created at 2026/5/13
  */
 public class IncrementalDownloadServlet extends HttpServlet {
 
-    private static final Set<String> ALLOWED_FORMATS = Set.of("epub", "txt", "html", "pdf");
-    private static final Set<String> ALLOWED_LANGUAGES = Set.of("zh_cn", "zh_tw", "zh_hant");
+    private static final java.util.Set<String> ALLOWED_LANGUAGES = java.util.Set.of("zh_cn", "zh_tw", "zh_hant");
 
     @Override
     protected void doGet(HttpServletRequest req, HttpServletResponse resp) {
         // ---- 1. 解析 + 基础校验 ----
-        String bookIdStr = req.getParameter("bookId");
-        String bookUrl = req.getParameter("url");
-        String format = req.getParameter("format");
-        String language = req.getParameter("language");
-        String concurrencyStr = req.getParameter("concurrency");
-        String startOrderStr = req.getParameter("startOrder");
-        boolean userConfirmed = "true".equalsIgnoreCase(req.getParameter("confirm"));
-
-        Integer bookId = parsePositiveInt(bookIdStr);
+        Integer bookId = parsePositiveInt(req.getParameter("bookId"));
         if (bookId == null) {
             RespUtils.writeError(resp, 400, "bookId 必须为正整数");
             return;
         }
+        String bookUrl = req.getParameter("url");
         if (StrUtil.isBlank(bookUrl)) {
             RespUtils.writeError(resp, 400, "url 不能为空");
             return;
         }
+        Integer startOrder = parsePositiveInt(req.getParameter("startOrder"));
+        if (startOrder == null) {
+            RespUtils.writeError(resp, 400, "startOrder 必须为正整数");
+            return;
+        }
+        Integer endOrder = parsePositiveInt(req.getParameter("endOrder"));
+        if (endOrder == null) {
+            RespUtils.writeError(resp, 400, "endOrder 必须为正整数");
+            return;
+        }
+        if (endOrder < startOrder) {
+            RespUtils.writeError(resp, 400, "endOrder 必须 >= startOrder");
+            return;
+        }
+        int requested = endOrder - startOrder + 1;
+        if (requested > TocPreviewServlet.MAX_BATCH) {
+            RespUtils.writeError(resp, 400,
+                    "单次下载上限 " + TocPreviewServlet.MAX_BATCH + " 章，当前 " + requested + " 章超限");
+            return;
+        }
+
         Rule rule;
         try {
             rule = SourceUtils.getRule(bookUrl);
@@ -102,15 +107,14 @@ public class IncrementalDownloadServlet extends HttpServlet {
             RespUtils.writeError(resp, 400, "不支持的源站 URL");
             return;
         }
-        if (StrUtil.isNotBlank(format) && !ALLOWED_FORMATS.contains(format.toLowerCase())) {
-            RespUtils.writeError(resp, 400, "不支持的下载格式: " + format);
-            return;
-        }
+
+        String language = req.getParameter("language");
         if (StrUtil.isNotBlank(language) && !ALLOWED_LANGUAGES.contains(language.toLowerCase())) {
             RespUtils.writeError(resp, 400, "不支持的语言: " + language);
             return;
         }
         Integer concurrency = null;
+        String concurrencyStr = req.getParameter("concurrency");
         if (StrUtil.isNotBlank(concurrencyStr)) {
             try {
                 concurrency = Integer.parseInt(concurrencyStr.trim());
@@ -119,17 +123,9 @@ public class IncrementalDownloadServlet extends HttpServlet {
                 return;
             }
         }
-        Integer startOrder = null;
-        if (StrUtil.isNotBlank(startOrderStr)) {
-            startOrder = parsePositiveInt(startOrderStr);
-            if (startOrder == null) {
-                RespUtils.writeError(resp, 400, "startOrder 必须为正整数");
-                return;
-            }
-        }
 
         try {
-            // ---- 2. 查 AI 后台书况 ----
+            // ---- 2. 查 AI 后台书况（取 latest_chapter_no 用于续号） ----
             RemoteBookInfo bookInfo;
             try {
                 bookInfo = RemoteBackendClient.getBookInfo(bookId);
@@ -141,7 +137,6 @@ public class IncrementalDownloadServlet extends HttpServlet {
             // ---- 3. 准备 AppConfig + 拉源站 toc ----
             AppConfig cfg = BeanUtil.copyProperties(AppConfigLoader.APP_CONFIG, AppConfig.class);
             cfg.setSourceId(rule.getId());
-            if (StrUtil.isNotBlank(format)) cfg.setExtName(format.toLowerCase());
             if (StrUtil.isNotBlank(language)) cfg.setLanguage(language);
             if (concurrency != null) cfg.setConcurrency(concurrency);
 
@@ -156,63 +151,23 @@ public class IncrementalDownloadServlet extends HttpServlet {
                 RespUtils.writeError(resp, 502, "源站目录为空");
                 return;
             }
-
-            // ---- 4. 计算下载起点 ----
-            int from;
-            if (startOrder != null) {
-                // 未命中分支：用户已经在前端选了锚点 idx'，下载从 idx'+1 开始
-                from = startOrder - 1;
-                if (from > fullToc.size()) {
-                    from = fullToc.size();
-                }
-            } else {
-                Optional<Integer> idx = IncrementalAnchorResolver.resolve(fullToc, bookInfo.getLatestChapterTitle());
-                if (idx.isEmpty()) {
-                    // 未命中 → 返完整 toc 让前端选锚点
-                    RespUtils.writeJson(resp, buildNeedAnchorResp(fullToc, bookInfo));
-                    return;
-                }
-                from = idx.get() + 1;
-            }
-
-            // ---- 5. 无新增章节 ----
-            if (from >= fullToc.size()) {
-                Map<String, Object> data = new LinkedHashMap<>();
-                data.put("noNewChapters", true);
-                data.put("message", "后台已是最新，无新增章节");
-                RespUtils.writeJson(resp, data);
+            if (endOrder > fullToc.size()) {
+                RespUtils.writeError(resp, 400,
+                        "endOrder=" + endOrder + " 超出源站章节总数 " + fullToc.size());
                 return;
             }
 
-            List<Chapter> subToc = new ArrayList<>(fullToc.subList(from, fullToc.size()));
+            // ---- 4. 切片 [startOrder, endOrder] ----
+            List<Chapter> subToc = new ArrayList<>(fullToc.subList(startOrder - 1, endOrder));
 
-            // ---- 6. 体量校验 ----
-            RemoteBackendConfig rb = AppConfigLoader.APP_CONFIG.getRemoteBackend();
-            int rejectThreshold = rb.getPushBatchRejectThreshold();
-            int warnThreshold = rb.getPushBatchWarnThreshold();
-            if (subToc.size() > rejectThreshold) {
-                RespUtils.writeError(resp, 413, "本次增量 " + subToc.size()
-                        + " 章超过最大上限 " + rejectThreshold + "，请先在后台对齐再下");
-                return;
-            }
-            if (subToc.size() > warnThreshold && !userConfirmed) {
-                Map<String, Object> data = new LinkedHashMap<>();
-                data.put("needConfirm", true);
-                data.put("incrementCount", subToc.size());
-                data.put("warnThreshold", warnThreshold);
-                data.put("message", "增量过大 (" + subToc.size() + " 章)，建议先在后台对齐再下");
-                RespUtils.writeJson(resp, data);
-                return;
-            }
-
-            // ---- 7. 下载 + 收集纯文本副本 ----
+            // ---- 5. 下载 + 收集纯文本副本 ----
             String taskId = UUID.randomUUID().toString();
             String workDir = System.getProperty("user.dir");
             ReportCollector collector = new ReportCollector(taskId, workDir);
 
             new Crawler(cfg).crawl(bookUrl, subToc, collector);
 
-            // ---- 8. 构造回推请求 + 持久化 DOWNLOADED_NOT_PUSHED 状态 ----
+            // ---- 6. 构造回推请求 + 持久化 DOWNLOADED_NOT_PUSHED ----
             List<RemoteChapterPushItem> rawSnapshot = collector.snapshot();
             int kPlus1 = bookInfo.getLatestChapterNo() + 1;
             List<RemoteChapterPushItem> chapters = renumberForReport(rawSnapshot, kPlus1);
@@ -240,7 +195,7 @@ public class IncrementalDownloadServlet extends HttpServlet {
                     .clientMeta(meta)
                     .build();
 
-            // ---- 9. 回推 + SSE 进度推送 + 状态收敛 ----
+            // ---- 7. 分批回推 + SSE 进度 ----
             DownloadProgressSseServlet.sendProgress(JSONUtil.toJsonStr(Map.of(
                     "type", "report-progress",
                     "phase", "reporting",
@@ -249,7 +204,15 @@ public class IncrementalDownloadServlet extends HttpServlet {
 
             RemotePushResponse pushResp;
             try {
-                pushResp = RemoteBackendClient.reportChapters(pushReq);
+                pushResp = RemoteBackendClient.reportChapters(pushReq, (batchIdx, totalBatches, batchSize) -> {
+                    DownloadProgressSseServlet.sendProgress(JSONUtil.toJsonStr(Map.of(
+                            "type", "report-progress",
+                            "phase", "batch",
+                            "batch", batchIdx,
+                            "totalBatches", totalBatches,
+                            "batchSize", batchSize
+                    )));
+                });
             } catch (RemoteBackendException e) {
                 taskRepo.markFailed(taskId, e.getMessage());
                 DownloadProgressSseServlet.sendProgress(JSONUtil.toJsonStr(Map.of(
@@ -297,36 +260,10 @@ public class IncrementalDownloadServlet extends HttpServlet {
         }
     }
 
-    /** 未命中分支响应体：含完整 toc（剥 url）+ 后台 latest 信息，前端据此渲染锚点选择 UI。 */
-    private static Map<String, Object> buildNeedAnchorResp(List<Chapter> fullToc, RemoteBookInfo bookInfo) {
-        List<Map<String, Object>> items = fullToc.stream()
-                .map(c -> {
-                    Map<String, Object> m = new LinkedHashMap<>(2);
-                    m.put("order", c.getOrder());
-                    m.put("title", c.getTitle());
-                    return m;
-                })
-                .toList();
-        Map<String, Object> data = new LinkedHashMap<>();
-        data.put("needAnchor", true);
-        data.put("latestTitle", bookInfo.getLatestChapterTitle());
-        data.put("latestChapterNo", bookInfo.getLatestChapterNo());
-        data.put("tocSize", items.size());
-        data.put("toc", items);
-        return data;
-    }
-
     /**
-     * 把 {@link ReportCollector#snapshot()} 输出的章节列表按"AI 后台 DB 目标序号"重写
-     * chapter_no：依次赋值 {@code startChapterNo, startChapterNo+1, ...}。
-     * <p>
-     * 仅追加场景（方案 v0.2 修订 ①），不处理覆盖错章；保留 title / content 原样。
-     * package-private 便于单测直接覆盖。
-     */
-    /**
-     * 把 {@link com.pcdd.sonovel.core.ReportCollector#snapshot()} 输出（chapterNo 此时是
-     * 源站 order 占位）转为 {@link LocalTaskState.ChapterRef} 列表：
-     * 同时填入"源站 order"（reports 副本文件名用此）与"AI 后台目标 chapter_no"。
+     * 把 {@link ReportCollector#snapshot()} 输出（chapterNo 此时是源站 order 占位）转为
+     * {@link LocalTaskState.ChapterRef} 列表：同时填入"源站 order"（reports 副本文件名用此）
+     * 与"AI 后台目标 chapter_no"。
      */
     static List<LocalTaskState.ChapterRef> buildChapterRefs(List<RemoteChapterPushItem> rawSnapshot, int startChapterNo) {
         if (rawSnapshot == null || rawSnapshot.isEmpty()) {
@@ -344,6 +281,11 @@ public class IncrementalDownloadServlet extends HttpServlet {
         return out;
     }
 
+    /**
+     * 把 {@link ReportCollector#snapshot()} 输出的章节列表按"AI 后台 DB 目标序号"重写
+     * chapter_no：依次赋值 {@code startChapterNo, startChapterNo+1, ...}。
+     * 仅追加场景（方案 v0.2 修订 ①），title/content 原样保留。
+     */
     static List<RemoteChapterPushItem> renumberForReport(List<RemoteChapterPushItem> raw, int startChapterNo) {
         if (raw == null || raw.isEmpty()) {
             return List.of();

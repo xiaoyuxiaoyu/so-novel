@@ -38,6 +38,9 @@ public class RemoteBackendConfig {
     /** 启动期是否调用 /ping，1=调，0=不调 */
     private Integer startupPing;
 
+    /** 单次回推 batch 大小（章数）。过大易触发后端 read-timeout，过小则请求数过多。 */
+    private Integer reportBatchSize;
+
     /**
      * mock=1 → 强制 mock；mock=0 → 真实；null → base-url 为空时自动 mock
      */

@@ -46,8 +46,7 @@ public class WebServer {
         context.addServlet(DownloadProgressSseServlet.class, "/download-progress");
         context.addServlet(ConfigServlet.class, "/config");
         // feat/web-active-report 新增：网页端"主动下载并回推 AI 后台"链路
-        context.addServlet(RemoteBookInfoServlet.class, "/remote-book-info");
-        context.addServlet(SourceTocServlet.class, "/source-toc");
+        context.addServlet(TocPreviewServlet.class, "/toc-preview");
         context.addServlet(IncrementalDownloadServlet.class, "/incremental-download");
         context.addServlet(RepushServlet.class, "/repush");
         context.addServlet(RemotePingServlet.class, "/remote-ping");

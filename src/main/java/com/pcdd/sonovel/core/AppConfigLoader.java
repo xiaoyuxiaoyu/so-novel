@@ -129,6 +129,7 @@ public class AppConfigLoader {
         c.setPushBatchWarnThreshold(getIntOrDefault(usr, "push-batch-warn-threshold", SELECTION_REMOTE_BACKEND, 500));
         c.setPushBatchRejectThreshold(getIntOrDefault(usr, "push-batch-reject-threshold", SELECTION_REMOTE_BACKEND, 2000));
         c.setStartupPing(getIntOrDefault(usr, "startup-ping", SELECTION_REMOTE_BACKEND, 1));
+        c.setReportBatchSize(getIntOrDefault(usr, "report-batch-size", SELECTION_REMOTE_BACKEND, 100));
 
         if (!c.isMockMode()) {
             if (StrUtil.isBlank(c.getBaseUrl()) || StrUtil.isBlank(c.getApiKey())) {
