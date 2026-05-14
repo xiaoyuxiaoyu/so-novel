@@ -12,6 +12,7 @@ import com.pcdd.sonovel.model.remote.RemotePushRequest;
 import com.pcdd.sonovel.model.remote.RemotePushResponse;
 import com.pcdd.sonovel.repository.RemoteBackendClient;
 import com.pcdd.sonovel.repository.TaskStateRepository;
+import com.pcdd.sonovel.util.WebReportLog;
 import com.pcdd.sonovel.web.util.RespUtils;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
@@ -114,55 +115,64 @@ public class RepushServlet extends HttpServlet {
                 .clientMeta(meta)
                 .build();
 
-        DownloadProgressSseServlet.sendProgress(JSONUtil.toJsonStr(Map.of(
-                "type", "report-progress",
-                "phase", "reporting",
-                "count", chapters.size()
-        )));
-
-        RemotePushResponse pushResp;
+        WebReportLog.setTask(taskId);
         try {
-            pushResp = RemoteBackendClient.reportChapters(pushReq);
-        } catch (RemoteBackendException e) {
-            repo.markFailed(taskId, e.getMessage());
+            WebReportLog.info("repush begin: bookId={}, sourceName={}, chapters={}",
+                    state.getBookId(), state.getSourceName(), chapters.size());
             DownloadProgressSseServlet.sendProgress(JSONUtil.toJsonStr(Map.of(
                     "type", "report-progress",
-                    "phase", "failed",
-                    "msg", e.getMessage()
+                    "phase", "reporting",
+                    "count", chapters.size()
             )));
+
+            RemotePushResponse pushResp;
+            try {
+                pushResp = RemoteBackendClient.reportChapters(pushReq);
+            } catch (RemoteBackendException e) {
+                WebReportLog.error(e, "repush failed");
+                repo.markFailed(taskId, e.getMessage());
+                DownloadProgressSseServlet.sendProgress(JSONUtil.toJsonStr(Map.of(
+                        "type", "report-progress",
+                        "phase", "failed",
+                        "msg", e.getMessage()
+                )));
+                Map<String, Object> data = new LinkedHashMap<>();
+                data.put("taskId", taskId);
+                data.put("pushed", false);
+                data.put("errorMessage", e.getMessage());
+                RespUtils.writeJson(resp, data);
+                return;
+            } catch (Exception e) {
+                WebReportLog.error(e, "repush failed (non-remote)");
+                repo.markFailed(taskId, e.getMessage());
+                RespUtils.writeError(resp, 500, "重推失败: " + e.getMessage());
+                return;
+            }
+
+            boolean hasRejected = pushResp.getRejected() != null && !pushResp.getRejected().isEmpty();
+            if (hasRejected) {
+                repo.markPartial(taskId, pushResp.getRejected());
+            } else {
+                repo.markPushed(taskId);
+            }
+
+            DownloadProgressSseServlet.sendProgress(JSONUtil.toJsonStr(Map.of(
+                    "type", "report-progress",
+                    "phase", "done",
+                    "accepted", pushResp.getAcceptedCount(),
+                    "updated", pushResp.getUpdatedCount(),
+                    "rejected", pushResp.getRejected() == null ? 0 : pushResp.getRejected().size()
+            )));
+
             Map<String, Object> data = new LinkedHashMap<>();
             data.put("taskId", taskId);
-            data.put("pushed", false);
-            data.put("errorMessage", e.getMessage());
+            data.put("pushed", true);
+            data.put("accepted", pushResp.getAcceptedCount());
+            data.put("updated", pushResp.getUpdatedCount());
+            data.put("rejected", pushResp.getRejected());
             RespUtils.writeJson(resp, data);
-            return;
-        } catch (Exception e) {
-            repo.markFailed(taskId, e.getMessage());
-            RespUtils.writeError(resp, 500, "重推失败: " + e.getMessage());
-            return;
+        } finally {
+            WebReportLog.clearTask();
         }
-
-        boolean hasRejected = pushResp.getRejected() != null && !pushResp.getRejected().isEmpty();
-        if (hasRejected) {
-            repo.markPartial(taskId, pushResp.getRejected());
-        } else {
-            repo.markPushed(taskId);
-        }
-
-        DownloadProgressSseServlet.sendProgress(JSONUtil.toJsonStr(Map.of(
-                "type", "report-progress",
-                "phase", "done",
-                "accepted", pushResp.getAcceptedCount(),
-                "updated", pushResp.getUpdatedCount(),
-                "rejected", pushResp.getRejected() == null ? 0 : pushResp.getRejected().size()
-        )));
-
-        Map<String, Object> data = new LinkedHashMap<>();
-        data.put("taskId", taskId);
-        data.put("pushed", true);
-        data.put("accepted", pushResp.getAcceptedCount());
-        data.put("updated", pushResp.getUpdatedCount());
-        data.put("rejected", pushResp.getRejected());
-        RespUtils.writeJson(resp, data);
     }
 }

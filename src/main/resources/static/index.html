@@ -802,11 +802,14 @@
         const data = json.data
         let summary = ''
         const rejList = data.rejected || []
+        const today = new Date().toISOString().slice(0, 10)
+        const logHint = `详见 logs/web-report ${today}.log`
         if (data.pushed) {
           summary = `下载并上报完成：新增 ${data.accepted}，覆盖 ${data.updated}，失败 ${rejList.length}`
+          if (rejList.length > 0) summary += `\n${logHint}`
           renderRejectedList(rejList)
         } else if (data.reportFailed) {
-          summary = `已下载未上报：${data.errorMessage}\n本地副本已落地，可在下方任务列表点"重新上报"。`
+          summary = `已下载未上报：${data.errorMessage}\n本地副本已落地，可在下方任务列表点"重新上报"。\n${logHint}`
         } else {
           summary = '下载已完成。'
         }

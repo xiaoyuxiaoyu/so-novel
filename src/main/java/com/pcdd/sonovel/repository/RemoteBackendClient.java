@@ -10,6 +10,7 @@ import cn.hutool.json.JSONUtil;
 import com.pcdd.sonovel.core.AppConfigLoader;
 import com.pcdd.sonovel.exception.RemoteBackendException;
 import com.pcdd.sonovel.model.RemoteBackendConfig;
+import com.pcdd.sonovel.util.WebReportLog;
 import com.pcdd.sonovel.model.remote.RemoteBookInfo;
 import com.pcdd.sonovel.model.remote.RemoteChapterPushItem;
 import com.pcdd.sonovel.model.remote.RemoteClientMeta;
@@ -80,6 +81,8 @@ public class RemoteBackendClient {
                 ? 100 : cfg.getReportBatchSize();
         int total = all.size();
         int totalBatches = total == 0 ? 0 : (total + batchSize - 1) / batchSize;
+        WebReportLog.info("reportChapters begin: bookId={}, totalChapters={}, batchSize={}, totalBatches={}",
+                req.getBookId(), total, batchSize, totalBatches);
 
         int acceptedSum = 0;
         int updatedSum = 0;
@@ -88,21 +91,42 @@ public class RemoteBackendClient {
             int from = i * batchSize;
             int to = Math.min(from + batchSize, total);
             List<RemoteChapterPushItem> sub = all.subList(from, to);
+            int batchIdx = i + 1;
+            int firstChapterNo = sub.get(0).getChapterNo();
+            int lastChapterNo = sub.get(sub.size() - 1).getChapterNo();
             if (progress != null) {
-                progress.onBatchStart(i + 1, totalBatches, sub.size());
+                progress.onBatchStart(batchIdx, totalBatches, sub.size());
             }
+            WebReportLog.info("batch {}/{} POST size={} chapter_no=[{}..{}]",
+                    batchIdx, totalBatches, sub.size(), firstChapterNo, lastChapterNo);
             RemotePushRequest batchReq = RemotePushRequest.builder()
                     .bookId(req.getBookId())
                     .chapters(sub)
                     .clientMeta(req.getClientMeta())
                     .build();
             JSONObject body = serializePushRequest(batchReq);
-            JSONObject data = callWithRetry(cfg, PATH_REPORT_CHAPTERS, body);
+            long started = System.currentTimeMillis();
+            JSONObject data;
+            try {
+                data = callWithRetry(cfg, PATH_REPORT_CHAPTERS, body);
+            } catch (RuntimeException e) {
+                long cost = System.currentTimeMillis() - started;
+                WebReportLog.error(e, "batch {}/{} failed after {}ms, abort. Already pushed batches=0..{} are kept on backend (upsert).",
+                        batchIdx, totalBatches, cost, batchIdx - 1);
+                throw e;
+            }
+            long cost = System.currentTimeMillis() - started;
             RemotePushResponse resp = parsePushResponse(data);
+            WebReportLog.info("batch {}/{} done in {}ms: accepted={}, updated={}, rejected={}",
+                    batchIdx, totalBatches, cost,
+                    resp.getAcceptedCount(), resp.getUpdatedCount(),
+                    resp.getRejected() == null ? 0 : resp.getRejected().size());
             acceptedSum += resp.getAcceptedCount();
             updatedSum += resp.getUpdatedCount();
             if (resp.getRejected() != null) rejectedAll.addAll(resp.getRejected());
         }
+        WebReportLog.info("reportChapters done: bookId={}, accepted_total={}, updated_total={}, rejected_total={}",
+                req.getBookId(), acceptedSum, updatedSum, rejectedAll.size());
         return RemotePushResponse.builder()
                 .acceptedCount(acceptedSum)
                 .updatedCount(updatedSum)
@@ -150,15 +174,23 @@ public class RemoteBackendClient {
             } catch (RuntimeException e) {
                 // HttpException / 网络异常 / 5xx：重试（RemoteBackendException 已在上面拦截）
                 lastRetryable = e;
+                WebReportLog.warn("HTTP attempt #{} on {} failed: {}: {}",
+                        attempts + 1, path, e.getClass().getSimpleName(), e.getMessage());
                 if (attempts >= MAX_RETRIES) {
                     break;
                 }
+                WebReportLog.info("sleep {}ms before retry #{}", RETRY_BACKOFF_MS[attempts], attempts + 2);
                 sleepQuiet(RETRY_BACKOFF_MS[attempts]);
                 attempts++;
             }
         }
+        // 把根因带出来，避免 UI 看到笼统的 "连接失败" 不知道原因
+        String detail = lastRetryable == null
+                ? ""
+                : "：" + lastRetryable.getClass().getSimpleName()
+                + (lastRetryable.getMessage() == null ? "" : ": " + lastRetryable.getMessage());
         throw new RemoteBackendException(
-                "AI 后台连接失败，已重试 " + MAX_RETRIES + " 次",
+                "AI 后台连接失败，已重试 " + MAX_RETRIES + " 次" + detail,
                 lastRetryable);
     }
 
@@ -178,13 +210,16 @@ public class RemoteBackendClient {
             String raw = resp.body();
             if (status >= 500) {
                 // 触发上层重试
-                throw new HttpException("AI 后台返回 " + status + ": " + raw);
+                WebReportLog.warn("POST {} → HTTP {}, body: {}", path, status, raw);
+                throw new HttpException("AI 后台返回 " + status + ": " + StrUtil.maxLength(raw, 200));
             }
             JSONObject json = parseJsonSafe(raw);
             int code = json.getInt("code", 0);
             if (code != 1) {
-                // 业务失败 / 鉴权失败 / 4xx 都从这里抛
-                throw new RemoteBackendException(json.getStr("msg", "AI 后台返回未知错误"));
+                // 业务失败 / 鉴权失败 / 4xx 都从这里抛；完整原始 body 写日志便于排查
+                WebReportLog.warn("POST {} → HTTP {}, code != 1, full body: {}", path, status, raw);
+                String msg = json.getStr("msg", "AI 后台返回未知错误");
+                throw new RemoteBackendException(msg + " [HTTP " + status + ", body=" + StrUtil.maxLength(raw, 300) + "]");
             }
             return json.getJSONObject("data") == null ? new JSONObject() : json.getJSONObject("data");
         } finally {

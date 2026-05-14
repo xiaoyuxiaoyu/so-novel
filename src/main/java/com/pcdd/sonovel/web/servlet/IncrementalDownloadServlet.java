@@ -20,6 +20,7 @@ import com.pcdd.sonovel.parse.TocParser;
 import com.pcdd.sonovel.repository.RemoteBackendClient;
 import com.pcdd.sonovel.repository.TaskStateRepository;
 import com.pcdd.sonovel.util.SourceUtils;
+import com.pcdd.sonovel.util.WebReportLog;
 import com.pcdd.sonovel.web.util.RespUtils;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
@@ -162,6 +163,9 @@ public class IncrementalDownloadServlet extends HttpServlet {
 
             // ---- 5. 下载 + 收集纯文本副本 ----
             String taskId = UUID.randomUUID().toString();
+            WebReportLog.setTask(taskId);
+            WebReportLog.info("incremental-download begin: bookId={}, sourceName={}, range=[{}..{}] ({} chapters), bookUrl={}",
+                    bookId, rule.getName(), startOrder, endOrder, requested, bookUrl);
             String workDir = System.getProperty("user.dir");
             ReportCollector collector = new ReportCollector(taskId, workDir);
 
@@ -214,6 +218,7 @@ public class IncrementalDownloadServlet extends HttpServlet {
                     )));
                 });
             } catch (RemoteBackendException e) {
+                WebReportLog.error(e, "incremental-download report failed");
                 taskRepo.markFailed(taskId, e.getMessage());
                 DownloadProgressSseServlet.sendProgress(JSONUtil.toJsonStr(Map.of(
                         "type", "report-progress",
@@ -233,8 +238,12 @@ public class IncrementalDownloadServlet extends HttpServlet {
             boolean hasRejected = pushResp.getRejected() != null && !pushResp.getRejected().isEmpty();
             if (hasRejected) {
                 taskRepo.markPartial(taskId, pushResp.getRejected());
+                WebReportLog.warn("incremental-download partial success: accepted={}, updated={}, rejected={}",
+                        pushResp.getAcceptedCount(), pushResp.getUpdatedCount(), pushResp.getRejected().size());
             } else {
                 taskRepo.markPushed(taskId);
+                WebReportLog.info("incremental-download success: accepted={}, updated={}",
+                        pushResp.getAcceptedCount(), pushResp.getUpdatedCount());
             }
 
             DownloadProgressSseServlet.sendProgress(JSONUtil.toJsonStr(Map.of(
@@ -256,7 +265,11 @@ public class IncrementalDownloadServlet extends HttpServlet {
         } catch (NumberFormatException e) {
             RespUtils.writeError(resp, 400, "参数格式错误: " + e.getMessage());
         } catch (Exception e) {
+            WebReportLog.error(e, "incremental-download uncaught: {}", e.getMessage());
             RespUtils.writeError(resp, 500, "下载失败: " + e.getMessage());
+        } finally {
+            // 兜底清理 ThreadLocal —— 无论哪条返回路径都会经过这里
+            WebReportLog.clearTask();
         }
     }
 
