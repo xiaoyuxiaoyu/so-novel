@@ -1,49 +1,27 @@
-## v1.10.0 (2026-03-08)
+## v1.10.1 (2026-05-14)
 
 ### ✨ Features
 
-- 新增书源「燃文小说网」
-- 新增书源「101看书」#238
-- 新增书源「笔趣阁365」#256
-- 新增书源「东滩小说」#295
-- 新增书源集 `cf-direct.json`
-- 支持添加 Cloudflare 防护的书源 #250
-- 简化书源详情页规则，默认从 meta 获取
+- 网页端"主动下载并回推 AI 后台"链路 v2：弹窗整合为单步章节预览页（源站完整 toc + 起止章节输入 + 默认 K+1~K+500 + 锚点高亮）
+- 单次下载/上报硬上限 500 章（前后端双校验）
+- 回推章节按 batch（默认 100 章/批）分批 POST，避免大 body 触发 read-timeout 但后端已 upsert 的"半成功"状态
+- 新增 `/toc-preview` 一把抓接口（书况 + 源站 toc + 锚点匹配）
+- 新增独立日志 `logs/web-report {date}.log`，`taskId` 串行追踪回推全链路
+- WebUI 默认开启（`[web] enabled=1`）、默认下载格式 `txt`
 
 ### 🐛 Bug Fixes
 
-- 修复 69 书吧无法获取正文 #250
-- 修复 Web 启动崩溃
-- 修复 WebUI 部署后未显示章节下载进度
+- 修复 Maven 资源过滤误伤前端 JS 模板字符串 `${id}`，弹窗 bookId 被打包时写死为 GAV 串
+- 修复 ChapterRenderer 渲染 txt 时前置 title 导致上报到 AI 后台的章节内容首行重复标题
+- 修复 `RemoteBackendClient` 异常 message 笼统"AI 后台连接失败"，现在会带 HTTP status + body 摘要 + cause class，UI 和日志都能直接定位根因
+- 修复不支持的源站 URL 返回 Jetty 默认 HTML 500 页面，改为 400 JSON
 
 ### ♻️ Refactor
 
-- 更新解析器
-- 更新随机 UA
-- OkHttp 请求携带 Referer 头
-- 重构 SSE 代码
-- 重构 `VirtualThreadLimiter.java`
-- 重构 `CheckUpdateAction.java`
-- 优化 `CrawlUtils#hasCf()`
-- 移除 `SearchResultsHandler#sort()`
-- 移除 `Book.java`
-- 移除 `Rule#Book#wordCount`
-- 重命名规则文件
+- `/incremental-download` 简化：`startOrder`/`endOrder` 必填，移除 `needAnchor`/`needConfirm` 多步流程
+- 删除 `/remote-book-info`、`/source-toc`（被 `/toc-preview` 覆盖）
+- `bundle/config.ini` 加 `report-batch-size`、安全注释（公开仓库禁止 commit 真实 `base-url`/`api-key`）
 
 ### 📝 Documentation
 
-- update readme.txt
-- update recommend-source.yml
-- update SPONSORS.md
-- README.md: 增加 WPS、掌阅等软件无法打开下载的 EPUB 解决方案
-- README.md: 将「JVM Options」改为「自定义 JVM 系统属性」
-- README.md: 移除 JVM Options `-Dfile.encoding`
-- README.md: 更正 `start-custom-jre.cmd` 错误
-
-### 🚸 Other Improvements
-
-- WebUI 列显示书源名
-- 优化 `run-macos.sh` #308
-- 更新书源规则模板
-- 更新 JS 逆向测试
-- 适配 act
+- 新增 `docs/Windows-11-打包指南.md`
