@@ -181,18 +181,8 @@
 
       <section data-step="input">
         <label class="modal-field">
-          AI 小说书籍 ID
+          AI 小说基站内书籍 ID
           <input type="number" min="1" id="modalBookId" placeholder="正整数，必填" />
-        </label>
-        <label class="modal-field">
-          下载格式
-          <select id="modalFormat">
-            <option value="">默认</option>
-            <option value="epub">EPUB</option>
-            <option value="txt">TXT</option>
-            <option value="html">HTML</option>
-            <option value="pdf">PDF</option>
-          </select>
         </label>
       </section>
 
@@ -631,7 +621,6 @@
     const modalCancel = document.getElementById('modalCancel')
     const modalClose = document.getElementById('modalClose')
     const modalBookId = document.getElementById('modalBookId')
-    const modalFormat = document.getElementById('modalFormat')
 
     let modalState = 'idle'
     let modalCtx = {}
@@ -666,7 +655,6 @@
       document.getElementById('modalBookName').textContent = item.bookName
       document.getElementById('modalAuthor').textContent = item.author
       modalBookId.value = ''
-      modalFormat.value = settingFormat.value || ''
       downloadModal.classList.remove('hidden')
       showStep('input')
     }
@@ -725,8 +713,6 @@
       const params = new URLSearchParams()
       params.set('bookId', modalCtx.bookId)
       params.set('url', item.url)
-      const fmt = modalFormat.value
-      if (fmt) params.set('format', fmt)
       if (settingLanguage.value) params.set('language', settingLanguage.value)
       if (settingConcurrency.value) params.set('concurrency', settingConcurrency.value)
       if (startOrder != null) params.set('startOrder', startOrder)
